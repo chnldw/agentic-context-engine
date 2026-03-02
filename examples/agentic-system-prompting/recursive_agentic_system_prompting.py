@@ -238,7 +238,7 @@ def main():
     )
     rr = RRStep(
         llm=llm,
-        config=RRConfig(subagent_model="bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0", max_iterations=60, max_output_chars=200_000),
+        config=RRConfig(subagent_model="bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0", max_iterations=60, max_llm_calls=60),
         prompt_template=REFLECTOR_RECURSIVE_V5_PROMPT,
         subagent_llm=subagent_llm,
     )
