@@ -17,7 +17,7 @@ from pipeline.context import StepContext
 from ace_next.core.sub_runner import SubRunner
 
 from .config import RecursiveConfig
-from .prompts import REFLECTOR_RECURSIVE_V3_PROMPT
+from .prompts import REFLECTOR_RECURSIVE_PROMPT
 from .sandbox import TraceSandbox
 from .subagent import CallBudget, SubAgentConfig, create_ask_llm_function
 from .trace_context import TraceContext
@@ -59,7 +59,7 @@ class RRStep(SubRunner):
         self,
         llm: Any,
         config: Optional[RecursiveConfig] = None,
-        prompt_template: str = REFLECTOR_RECURSIVE_V3_PROMPT,
+        prompt_template: str = REFLECTOR_RECURSIVE_PROMPT,
         subagent_llm: Any = None,
     ) -> None:
         cfg = config or RecursiveConfig()
