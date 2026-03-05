@@ -142,7 +142,7 @@ Your response **must strictly follow** this JSON format for structured evaluatio
 {{
   "analysis": "[Brief analysis of how the summarization addresses the criteria]",
   "reasoning": "[Concise reasoning on strengths, weaknesses, and any signs of hallucination]",
-  "score": <int>
+  "score": 75
 }}
 
 ---
@@ -182,14 +182,7 @@ def summarization_grader(
         generated_summary=generated_summary or "",
     )
 
-    max_retries = 3
-    for attempt in range(max_retries):
-        try:
-            return judge_llm.complete_structured(judge_prompt, JudgeResponse)
-        except Exception:
-            logger.warning("Judge attempt %d/%d failed", attempt + 1, max_retries)
-
-    raise ValueError(f"Judge failed after {max_retries} attempts")
+    return judge_llm.complete_structured(judge_prompt, JudgeResponse)
 
 
 # ---------------------------------------------------------------------------
