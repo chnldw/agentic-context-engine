@@ -24,8 +24,14 @@ logging.basicConfig(level=logging.INFO)
 logging.getLogger("LiteLLM").setLevel(logging.WARNING)
 logging.getLogger("LiteLLM Router").setLevel(logging.WARNING)
 
-# Silence py4j Spark bridge noise
+# Silence py4j Spark bridge noise (logged via root logger, so a filter is needed)
 logging.getLogger("py4j").setLevel(logging.WARNING)
+
+class _Py4jFilter(logging.Filter):
+    def filter(self, record):
+        return "py4j" not in record.pathname.lower()
+
+logging.root.addFilter(_Py4jFilter())
 
 # COMMAND ----------
 
