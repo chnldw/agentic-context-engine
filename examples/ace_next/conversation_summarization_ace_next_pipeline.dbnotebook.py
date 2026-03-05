@@ -11,23 +11,10 @@
 # MAGIC **Usage:** Run all cells top-to-bottom. `dbutils` is provided automatically by Databricks.
 
 # COMMAND ----------
-# MAGIC %pip install --upgrade ace-framework nest_asyncio "pydantic>=2"
+# MAGIC %pip install --upgrade ace-framework nest_asyncio
 
 # COMMAND ----------
-
-import sys
-
-# Databricks puts system packages (pydantic v1) before the pip virtualenv on
-# sys.path. Reorder so the virtualenv site-packages come first.
-_venv = [p for p in sys.path if "ephemeral" in p or ("/envs/" in p and "site-packages" in p)]
-if _venv:
-    for _p in _venv:
-        sys.path.remove(_p)
-    sys.path = _venv + sys.path
-del _venv
-
-import pydantic
-assert int(pydantic.VERSION.split(".")[0]) >= 2, f"pydantic>=2 required, got {pydantic.VERSION}"
+# MAGIC %restart_python
 
 # COMMAND ----------
 
