@@ -142,7 +142,7 @@ Your response **must strictly follow** this JSON format for structured evaluatio
 {{
   "analysis": "[Brief analysis of how the summarization addresses the criteria]",
   "reasoning": "[Concise reasoning on strengths, weaknesses, and any signs of hallucination]",
-  "score": 75
+  "score": <int>
 }}
 
 ---
@@ -216,15 +216,16 @@ class SummarizationEnvironment(TaskEnvironment):
 
         call_conversation = sample.metadata.get("call_conversation", "")
         judge = summarization_grader(self.judge_llm, generated_summary, call_conversation)
-        self.scores.append(float(judge.score))
+        normalized = float(judge.score) / 100.0
+        self.scores.append(normalized)
         feedback = (
-            f"LLM judge score: {judge.score}/100\n"
+            f"LLM judge score: {normalized:.3f}\n"
             f"Analysis: {judge.analysis}\n"
             f"Reasoning: {judge.reasoning}"
         )
         return EnvironmentResult(
             feedback=feedback,
-            metrics={"score": judge.score},
+            metrics={"score": normalized},
         )
 
 
@@ -411,7 +412,7 @@ def main(dbutils: object, num_samples: Optional[int] = None) -> None:
     for epoch in range(1, 4):
         epoch_scores = environment.scores[(epoch - 1) * n : epoch * n]
         avg = sum(epoch_scores) / len(epoch_scores) if epoch_scores else 0.0
-        print(f"Epoch {epoch}: avg_score={avg:.1f}, n={len(epoch_scores)}")
+        print(f"Epoch {epoch}: avg_score={avg:.3f}, n={len(epoch_scores)}")
 
     print(f"\nSkillbook: {skillbook.stats()}")
     for skill in skillbook.skills()[:5]:
