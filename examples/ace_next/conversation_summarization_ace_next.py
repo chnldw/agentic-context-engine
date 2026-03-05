@@ -181,6 +181,8 @@ def summarization_grader(
         conversation=conversation,
         generated_summary=generated_summary or "",
     )
+    
+    print(judge_prompt)  # Debug: print the prompt sent to the judge LLM
 
     return judge_llm.complete_structured(judge_prompt, JudgeResponse)
 
