@@ -198,7 +198,7 @@ Quick links:
 
 ## Contributing
 
-We love contributions! Check out our [Contributing Guide](CONTRIBUTING.md) to get started.
+Contributions are welcome. Please read our [Contributing Guidelines](CONTRIBUTING.md) before submitting a pull request.
 
 ---
 
