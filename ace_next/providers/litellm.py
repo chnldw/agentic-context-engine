@@ -467,7 +467,8 @@ class LiteLLMClient:
                 return response_model.model_validate(data)
             except (json.JSONDecodeError, ValueError, Exception) as e:
                 last_error = e
-                logger.warning(
+                log = logger.warning if attempt + 1 == max_retries else logger.debug
+                log(
                     "Structured parse attempt %d/%d failed: %s",
                     attempt + 1,
                     max_retries,

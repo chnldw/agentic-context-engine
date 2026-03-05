@@ -136,6 +136,17 @@ Follow these three steps:
 
 ---
 
+# Output Format
+
+Your response **must strictly follow** this JSON format for structured evaluation:
+{{
+  "analysis": "[Brief analysis of how the summarization addresses the criteria]",
+  "reasoning": "[Concise reasoning on strengths, weaknesses, and any signs of hallucination]",
+  "score": <int>
+}}
+
+---
+
 # call transcript
 ```
 {conversation}
@@ -149,7 +160,8 @@ Follow these three steps:
 
 
 class JudgeResponse(BaseModel):
-    reason: str = Field(description="Brief reasoning for the score.")
+    analysis: str = Field(description="Brief analysis of how the summarization addresses the criteria.")
+    reasoning: str = Field(description="Concise reasoning on strengths, weaknesses, and any signs of hallucination.")
     score: int = Field(description="The score on a 0-100 scale.")
 
 
@@ -157,13 +169,13 @@ def summarization_grader(
     judge_llm: LiteLLMClient,
     generated_summary: Optional[str],
     conversation: str,
-) -> float:
+) -> JudgeResponse:
     """Score a generated summary against the original conversation transcript.
 
     Uses an LLM-as-judge that evaluates coverage, balance, detail accuracy,
     agent response representation, emotional context, and hallucination.
 
-    Returns a float in the 0-100 range.
+    Returns a JudgeResponse with analysis, reasoning, and a 0-100 score.
     """
     judge_prompt = SUMMARIZATION_LLM_AS_A_JUDGE_PROMPT.format(
         conversation=conversation,
@@ -173,8 +185,7 @@ def summarization_grader(
     max_retries = 3
     for attempt in range(max_retries):
         try:
-            result = judge_llm.complete_structured(judge_prompt, JudgeResponse)
-            return float(result.score)
+            return judge_llm.complete_structured(judge_prompt, JudgeResponse)
         except Exception:
             logger.warning("Judge attempt %d/%d failed", attempt + 1, max_retries)
 
@@ -211,12 +222,16 @@ class SummarizationEnvironment(TaskEnvironment):
             )
 
         call_conversation = sample.metadata.get("call_conversation", "")
-        score = summarization_grader(self.judge_llm, generated_summary, call_conversation)
-        self.scores.append(score)
+        judge = summarization_grader(self.judge_llm, generated_summary, call_conversation)
+        self.scores.append(float(judge.score))
+        feedback = (
+            f"LLM judge score: {judge.score}/100\n"
+            f"Analysis: {judge.analysis}\n"
+            f"Reasoning: {judge.reasoning}"
+        )
         return EnvironmentResult(
-            feedback=f"LLM judge score: {score:.1f}/100",
-            ground_truth=None,
-            metrics={"score": score},
+            feedback=feedback,
+            metrics={"score": judge.score},
         )
 
 
