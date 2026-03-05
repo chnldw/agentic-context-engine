@@ -13,12 +13,13 @@ Usage (in a Databricks notebook)::
 """
 
 import logging
-from typing import Optional
+from typing import List, Optional
 
 from ace_next import (
     Agent,
     LiteLLMClient,
     Reflector,
+    Sample,
     Skillbook,
     SkillManager,
 )
@@ -28,29 +29,24 @@ from pipeline import Pipeline
 
 from conversation_summarization_ace_next import (
     SummarizationEnvironment,
+    _make_debug_sample,
     load_summarization_tasks,
 )
 
 logger = logging.getLogger(__name__)
 
 
-def main(dbutils: object, num_samples: Optional[int] = None) -> None:
-    """Run the manually composed ACE pipeline on conversation summarization tasks.
+def _run_pipeline(
+    samples: List[Sample],
+    llm: LiteLLMClient,
+    judge_llm: LiteLLMClient,
+    total_epochs: int = 3,
+) -> None:
+    """Build and run the manually composed ACE pipeline on the given samples.
 
-    Builds the pipeline explicitly as:
-        AgentStep → EvaluateStep → ReflectStep → TagStep → UpdateStep → ApplyStep
-
-    and drives the epoch loop by hand, giving full visibility into each step.
-
-    Args:
-        dbutils: Databricks ``dbutils`` object (available in Databricks notebooks).
-        num_samples: Number of samples to load. Defaults to all available.
+    Shared by :func:`main` and :func:`debug_local` — only the data loading
+    and model selection differ between the two entry points.
     """
-    logging.basicConfig(level=logging.INFO)
-
-    llm = LiteLLMClient(model="gpt-5-mini", temperature=0.0)
-    judge_llm = LiteLLMClient(model="o4-mini-data-curation", temperature=0.0)
-
     environment = SummarizationEnvironment(judge_llm)
     skillbook = Skillbook()
 
@@ -62,11 +58,7 @@ def main(dbutils: object, num_samples: Optional[int] = None) -> None:
         ]
     )
 
-    print(f"Pipeline steps: {len(pipe._steps)}")
     print(f"  requires: {pipe.requires}, provides: {pipe.provides}")
-
-    samples = load_summarization_tasks(dbutils, num_samples=num_samples)
-    total_epochs = 3
 
     for epoch in range(1, total_epochs + 1):
         print(f"\n--- Epoch {epoch}/{total_epochs} ---")
@@ -90,7 +82,7 @@ def main(dbutils: object, num_samples: Optional[int] = None) -> None:
         epoch_scores = environment.scores[(epoch - 1) * len(samples) : epoch * len(samples)]
         avg = sum(epoch_scores) / len(epoch_scores) if epoch_scores else 0.0
 
-        print(f"  Processed: {len(results)}, Errors: {errors}, Avg score: {avg:.1f}")
+        print(f"  Processed: {len(results)}, Errors: {errors}, Avg score: {avg:.3f}")
         print(f"  Skills so far: {skillbook.stats()}")
 
     pipe.wait_for_background()
@@ -100,7 +92,41 @@ def main(dbutils: object, num_samples: Optional[int] = None) -> None:
         print(f"  [{skill.section}] {skill.content}")
 
 
+def main(dbutils: object, num_samples: Optional[int] = None) -> None:
+    """Run the manually composed ACE pipeline on conversation summarization tasks.
+
+    Builds the pipeline explicitly as:
+        AgentStep → EvaluateStep → ReflectStep → TagStep → UpdateStep → ApplyStep
+
+    and drives the epoch loop by hand, giving full visibility into each step.
+
+    Args:
+        dbutils: Databricks ``dbutils`` object (available in Databricks notebooks).
+        num_samples: Number of samples to load. Defaults to all available.
+    """
+    logging.basicConfig(level=logging.INFO)
+
+    llm = LiteLLMClient(model="gpt-5-mini", temperature=0.0)
+    judge_llm = LiteLLMClient(model="o4-mini-data-curation", temperature=0.0)
+    samples = load_summarization_tasks(dbutils, num_samples=num_samples)
+    _run_pipeline(samples, llm, judge_llm, total_epochs=3)
+
+
+def debug_local() -> None:
+    """Run the pipeline locally on a single hardcoded sample — no Databricks required.
+
+    Uses standard LiteLLM model names that work with the OpenAI API.
+    Set the OPENAI_API_KEY environment variable before running.
+
+    Usage::
+
+        python conversation_summarization_ace_next_pipeline.py
+    """
+    llm = LiteLLMClient(model="gpt-4o-mini", temperature=0.0)
+    judge_llm = LiteLLMClient(model="gpt-4o-mini", temperature=0.0)
+    _run_pipeline(_make_debug_sample(), llm, judge_llm, total_epochs=2)
+
+
 if __name__ == "__main__":
-    # This script requires a Databricks environment with dbutils available.
-    print("This module is designed for Databricks execution.")
-    print("Use main(dbutils) in a Databricks notebook.")
+    logging.basicConfig(level=logging.INFO)
+    debug_local()

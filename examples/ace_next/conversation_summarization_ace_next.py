@@ -182,8 +182,6 @@ def summarization_grader(
         generated_summary=generated_summary or "",
     )
     
-    print(judge_prompt)  # Debug: print the prompt sent to the judge LLM
-
     return judge_llm.complete_structured(judge_prompt, JudgeResponse)
 
 
@@ -359,7 +357,7 @@ def load_summarization_tasks(
             language=language,
             additional_instructions=additional_instructions,
         )
-
+        
         samples.append(
             Sample(
                 question=question,
@@ -381,18 +379,101 @@ def load_summarization_tasks(
 # ---------------------------------------------------------------------------
 
 
-def main(dbutils: object, num_samples: Optional[int] = None) -> None:
-    """Run ACE Next adaptive pipeline on conversation summarization tasks.
+def _make_debug_sample() -> List[Sample]:
+    """Return a single hardcoded Sample for local debugging.
 
-    Args:
-        dbutils: Databricks ``dbutils`` object (available in Databricks notebooks).
-        num_samples: Number of samples to load. Defaults to all available.
+    Shared between this module and ``conversation_summarization_ace_next_pipeline``
+    so both ``debug_local()`` entry points use the same test conversation.
     """
-    logging.basicConfig(level=logging.INFO)
+    call_conversation = (
+        "CLIENT: welcome AGENT: Thank you for your call. To help us find your booking, "
+        "we will ask you a few simple questions. Please use your telephone keypad to enter "
+        "your answer. Using your telephone keypad, please enter only the numbers that appear "
+        "in your postcode, followed by the # key. For example, if your postcode is <Address>, "
+        "enter 6, 0, 2, #. CLIENT: 77 AGENT: <speak>You entered,    <say-as "
+        'interpret-as="verbatim">77</say-as> ,  is this correct? press 1 for yes, or 2 for no, '
+        "followed by the # key.</speak> CLIENT: 1 AGENT: Using your telephone keypad, please "
+        "enter your house number, followed by the hash key. If you do not have a house number, "
+        "then simply press the hash key. CLIENT: 1 AGENT: <speak>You answered,    <say-as "
+        'interpret-as="verbatim">1</say-as> , is this correct?  press 1 for yes, or 2 for no, '
+        "followed by the # key.</speak> CLIENT: 1 AGENT: What year were you born? Enter all "
+        "four digits of your birth year, followed by the hash key. For example, if you were "
+        "born in 1966, press 1, 9, 6, 6, #. CLIENT: 1956 AGENT: You entered, 1956, is this "
+        "correct? press 1 for yes, or 2 for no, followed by the # key. CLIENT: 1 AGENT: "
+        "CAROLS AT THE ROYAL ALBERT HALL. Is this the tour you wish to discuss <DateTime>? "
+        "Press 1 for Yes, or 2 for No. End your selection with #. CLIENT: 1 AGENT: You have "
+        "a booking for the 'CAROLS AT THE ROYAL ALBERT HALL' which departs on <DateTime> and "
+        "lasts for 2 nights. Your Joining Point is Sheffield, where you will board Tour Coach "
+        "Number 124. Your allocated seat numbers on the coach are 7,8. The travel documents "
+        "for you tour have been sent. You need to provide us with your passport details. You "
+        "have fully paid for this tour, we hope you're looking forward to your trip!. Thank "
+        "you.. Do you have another request? Press 1 for Yes, or 2 for No. End your selection "
+        "with #. CLIENT: 1 AGENT: I understand, please wait while I forward your call AGENT: "
+        "You know AGENT: Hello, you're speaking to <Person> here at <Organization>. How is it "
+        "I can help <DateTime>? CLIENT: Hello <Person>, have I got through to MI5. CLIENT: "
+        "Hello AGENT: Hello, you're speaking to <Person>. CLIENT: hello, <Person> AGENT: They "
+        "CLIENT: Um, I'm just looking where we're coming on the trip uh to the uh <Person> for "
+        "the <Person> service. AGENT: OK CLIENT: I'm just looking for, uh, have you got an "
+        "approximate time on <DateTime> when we get back so we can arrange to be picked up from "
+        "the station. CLIENT: from the bus station AGENT: Let's have a little look for you. Am "
+        "I OK to take your name? CLIENT: Yes, it's to <Person>. AGENT: Thank you. And just for "
+        "security cases, can I get you to confirm your first line of address and postcode for "
+        "me. CLIENT: Uh yes, it's one Aldergrove, SR77RT. AGENT: Perfect. And I've got a "
+        "mobile number here ending 862. Is that still correct? CLIENT: Yes, that's correct "
+        "AGENT: Yeah, AGENT: perfect. And then I've also got your email address as <Person> at "
+        "<URL>. CLIENT: Uh, that's correct, yes CLIENT: It is, yes AGENT: Perfect. Thank you. "
+        "So let's have a little look for you. So it's a <Person>'s at the Royal Albert Hall's "
+        "have a little look. CLIENT: from Sheffield AGENT: And what from Sheffield, so we're "
+        "aiming to get back to Sheffield around 5 o'clock. CLIENT: around 5 o'clock. That's, "
+        "that's fine. Just gives us a, an idea idea. Thank you. CLIENT: Yeah. AGENT: A rough "
+        "idea, yeah. No, that's no problem at all. OK just while I've got you on the phone, I "
+        "just want to double check we've got all the correct details still on file, so I've got "
+        "your daughter as your next of kin. Is that still correct? CLIENT: yes AGENT: Yeah, and "
+        "I've got your mobile as your day of departure number as well for you. CLIENT: Yeah "
+        "AGENT: Um, and then just to double check we've got no special requests that have been "
+        "being placed for you. So we've got no dietary or medical but we need to be aware of. "
+        "CLIENT: uh no AGENT: No, and no mobility issues, you have. CLIENT: Yeah, and it's at "
+        "9 o'clock CLIENT: No, we're quite mobile. We're all a bit mobile. CLIENT: <DateTime> "
+        "AGENT: No problem at all. We just want to make sure that you're gonna be comfy on tour "
+        "with us that's all. CLIENT: Yes AGENT: No prob. I need, I can see that you've had all "
+        "your details. They've been emailed over to you. CLIENT: yes they have AGENT: Yeah, and "
+        "you're OK with this still emailing and if that's all OK. CLIENT: Yeah, that's fine "
+        "AGENT: No CLIENT: It is 9 o'clock, pickup. CLIENT: OK. AGENT: Pickup is CLIENT: It's "
+        "yeah, it's not, yes. AGENT: no, your pickup is 1010. CLIENT: it's 9 o'clock pickup, "
+        "9 o'clock pickup, isn't it? Yes. AGENT: No, no, you're departure time is 1010. "
+        "CLIENT: oh. CLIENT: right,1010 AGENT: 1010 at the bus stands E4 to E6 at Sheffield "
+        "bus station interchange."
+    )
+    language = "en-GB"
+    additional_instructions = ""
+    return [
+        Sample(
+            question=V8A_PROMPT.format(
+                call_conversation=call_conversation,
+                language=language,
+                additional_instructions=additional_instructions,
+            ),
+            ground_truth=None,
+            metadata={
+                "call_conversation": call_conversation,
+                "language": language,
+                "additional_instructions": additional_instructions,
+            },
+        )
+    ]
 
-    llm = LiteLLMClient(model="gpt-5-mini", temperature=0.0)
-    judge_llm = LiteLLMClient(model="o4-mini-data-curation")
 
+def _run_ace(
+    samples: List[Sample],
+    llm: LiteLLMClient,
+    judge_llm: LiteLLMClient,
+    total_epochs: int = 3,
+) -> None:
+    """Build and run the ACE adaptive pipeline on the given samples.
+
+    Shared by :func:`main` and :func:`debug_local` — only the data loading
+    and model selection differ between the two entry points.
+    """
     environment = SummarizationEnvironment(judge_llm)
     skillbook = Skillbook()
 
@@ -404,14 +485,12 @@ def main(dbutils: object, num_samples: Optional[int] = None) -> None:
         skillbook=skillbook,
     )
 
-    samples = load_summarization_tasks(dbutils, num_samples=num_samples)
-    results = ace.run(samples, epochs=3)
+    results = ace.run(samples, epochs=total_epochs)
 
     print(f"\nTotal results: {len(results)}")
 
-    # Per-epoch stats — environment.scores has len(samples) entries per epoch
     n = len(samples)
-    for epoch in range(1, 4):
+    for epoch in range(1, total_epochs + 1):
         epoch_scores = environment.scores[(epoch - 1) * n : epoch * n]
         avg = sum(epoch_scores) / len(epoch_scores) if epoch_scores else 0.0
         print(f"Epoch {epoch}: avg_score={avg:.3f}, n={len(epoch_scores)}")
@@ -421,7 +500,36 @@ def main(dbutils: object, num_samples: Optional[int] = None) -> None:
         print(f"  [{skill.section}] {skill.content}")
 
 
+def main(dbutils: object, num_samples: Optional[int] = None) -> None:
+    """Run ACE Next adaptive pipeline on conversation summarization tasks.
+
+    Args:
+        dbutils: Databricks ``dbutils`` object (available in Databricks notebooks).
+        num_samples: Number of samples to load. Defaults to all available.
+    """
+    logging.basicConfig(level=logging.INFO)
+
+    llm = LiteLLMClient(model="gpt-5-mini", temperature=0.0)
+    judge_llm = LiteLLMClient(model="o4-mini-data-curation")
+    samples = load_summarization_tasks(dbutils, num_samples=num_samples)
+    _run_ace(samples, llm, judge_llm, total_epochs=3)
+
+
+def debug_local() -> None:
+    """Run the ACE pipeline locally on a single hardcoded sample — no Databricks required.
+
+    Uses standard LiteLLM model names that work with the OpenAI API.
+    Set the OPENAI_API_KEY environment variable before running.
+
+    Usage::
+
+        python conversation_summarization_ace_next.py
+    """
+    llm = LiteLLMClient(model="gpt-4o-mini", temperature=0.0)
+    judge_llm = LiteLLMClient(model="gpt-4o-mini", temperature=0.0)
+    _run_ace(_make_debug_sample(), llm, judge_llm, total_epochs=2)
+
+
 if __name__ == "__main__":
-    # This script requires a Databricks environment with dbutils available.
-    print("This module is designed for Databricks execution.")
-    print("Use main(dbutils) in a Databricks notebook.")
+    logging.basicConfig(level=logging.INFO)
+    debug_local()
