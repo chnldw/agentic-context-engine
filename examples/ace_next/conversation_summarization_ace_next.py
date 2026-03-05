@@ -389,7 +389,7 @@ def main(dbutils: object, num_samples: Optional[int] = None) -> None:
     logging.basicConfig(level=logging.INFO)
 
     llm = LiteLLMClient(model="gpt-5-mini", temperature=0.0)
-    judge_llm = LiteLLMClient(model="o4-mini-data-curation", temperature=0.0)
+    judge_llm = LiteLLMClient(model="o4-mini-data-curation")
 
     environment = SummarizationEnvironment(judge_llm)
     skillbook = Skillbook()

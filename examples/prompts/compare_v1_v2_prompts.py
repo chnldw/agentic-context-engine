@@ -26,7 +26,7 @@ from ace import (
 from ace.prompts import AGENT_PROMPT, REFLECTOR_PROMPT, SKILL_MANAGER_PROMPT
 from ace.prompts_v2_1 import (
     PromptManager,
-    validate_prompt_output,
+    validate_prompt_output_v2_1,
 )
 
 # Load environment variables
@@ -165,7 +165,7 @@ def run_comparison_test(llm_client, samples, environment, version="v1"):
             output = results[0].agent_output
             if hasattr(output, "raw"):
                 json_str = json.dumps(output.raw)
-                is_valid, errors = validate_prompt_output(json_str, "agent")
+                is_valid, errors = validate_prompt_output_v2_1(json_str, "agent")
                 metrics["json_valid"] = is_valid
                 metrics["validation_errors"] = errors
         except Exception as e:
@@ -299,7 +299,7 @@ def main():
 
     # Create LLM client
     llm = LiteLLMClient(
-        model="gpt-3.5-turbo", temperature=0.1  # Low temperature for consistency
+        model="gpt-4.1-mini", temperature=0.1  # Low temperature for consistency
     )
 
     # Test samples covering different types
