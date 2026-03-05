@@ -1,0 +1,106 @@
+"""Conversation summarization demo using ACE Next (manual Pipeline construction).
+
+Low-level counterpart to ``conversation_summarization_ace_next.py``.
+Builds the pipeline by hand using individual steps, giving full control over
+the step composition and per-epoch execution loop.
+
+Designed for Databricks execution.
+
+Usage (in a Databricks notebook)::
+
+    from examples.ace_next.conversation_summarization_ace_next_pipeline import main
+    main(dbutils, num_samples=20)
+"""
+
+import logging
+from typing import Optional
+
+from ace_next import (
+    Agent,
+    LiteLLMClient,
+    Reflector,
+    Skillbook,
+    SkillManager,
+)
+from ace_next.core import ACEStepContext, SkillbookView
+from ace_next.steps import AgentStep, EvaluateStep, learning_tail
+from pipeline import Pipeline
+
+from conversation_summarization_ace_next import (
+    SummarizationEnvironment,
+    load_summarization_tasks,
+)
+
+logger = logging.getLogger(__name__)
+
+
+def main(dbutils: object, num_samples: Optional[int] = None) -> None:
+    """Run the manually composed ACE pipeline on conversation summarization tasks.
+
+    Builds the pipeline explicitly as:
+        AgentStep → EvaluateStep → ReflectStep → TagStep → UpdateStep → ApplyStep
+
+    and drives the epoch loop by hand, giving full visibility into each step.
+
+    Args:
+        dbutils: Databricks ``dbutils`` object (available in Databricks notebooks).
+        num_samples: Number of samples to load. Defaults to all available.
+    """
+    logging.basicConfig(level=logging.INFO)
+
+    llm = LiteLLMClient(model="gpt-5-mini", temperature=0.0)
+    judge_llm = LiteLLMClient(model="o4-mini-data-curation", temperature=0.0)
+
+    environment = SummarizationEnvironment(judge_llm)
+    skillbook = Skillbook()
+
+    pipe = Pipeline(
+        [
+            AgentStep(Agent(llm)),
+            EvaluateStep(environment),
+            *learning_tail(Reflector(llm), SkillManager(llm), skillbook),
+        ]
+    )
+
+    print(f"Pipeline steps: {len(pipe._steps)}")
+    print(f"  requires: {pipe.requires}, provides: {pipe.provides}")
+
+    samples = load_summarization_tasks(dbutils, num_samples=num_samples)
+    total_epochs = 3
+
+    for epoch in range(1, total_epochs + 1):
+        print(f"\n--- Epoch {epoch}/{total_epochs} ---")
+
+        contexts = [
+            ACEStepContext(
+                sample=s,
+                skillbook=SkillbookView(skillbook),
+                epoch=epoch,
+                total_epochs=total_epochs,
+                step_index=0,
+                total_steps=len(samples),
+                global_sample_index=i,
+            )
+            for i, s in enumerate(samples)
+        ]
+
+        results = pipe.run(contexts)
+
+        errors = sum(1 for r in results if r.error)
+        epoch_scores = environment.scores[(epoch - 1) * len(samples) : epoch * len(samples)]
+        avg = sum(epoch_scores) / len(epoch_scores) if epoch_scores else 0.0
+
+        print(f"  Processed: {len(results)}, Errors: {errors}, Avg score: {avg:.1f}")
+        print(f"  Skills so far: {skillbook.stats()}")
+
+    pipe.wait_for_background()
+
+    print(f"\nFinal skillbook: {skillbook.stats()}")
+    for skill in skillbook.skills()[:5]:
+        print(f"  [{skill.section}] {skill.content}")
+
+
+if __name__ == "__main__":
+    # This script requires a Databricks environment with dbutils available.
+    print("This module is designed for Databricks execution.")
+    print("Use main(dbutils) in a Databricks notebook.")
