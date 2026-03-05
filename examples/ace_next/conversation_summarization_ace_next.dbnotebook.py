@@ -1,5 +1,4 @@
 # Databricks notebook source
-
 # COMMAND ----------
 # MAGIC %md
 # MAGIC # Conversation Summarization — ACE Next
@@ -11,7 +10,7 @@
 
 # COMMAND ----------
 # MAGIC %sh
-# MAGIC pip install ace-framework
+# MAGIC pip install ace-framework nest_asyncio
 
 # COMMAND ----------
 
@@ -21,11 +20,17 @@ dbutils.library.restartPython()
 
 import logging
 
+import nest_asyncio
+nest_asyncio.apply()
+
 logging.basicConfig(level=logging.INFO)
 
 # Silence LiteLLM verbose output
 logging.getLogger("LiteLLM").setLevel(logging.WARNING)
 logging.getLogger("LiteLLM Router").setLevel(logging.WARNING)
+
+# Silence py4j Spark bridge noise
+logging.getLogger("py4j").setLevel(logging.WARNING)
 
 # COMMAND ----------
 
