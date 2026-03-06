@@ -271,6 +271,7 @@ class SummarizationEnvironment(TaskEnvironment):
         )
         return EnvironmentResult(
             feedback=feedback,
+            ground_truth=None,
             metrics={"score": normalized},
         )
 
