@@ -16,13 +16,12 @@ Usage (in a Databricks notebook)::
 import json
 import logging
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from pydantic import BaseModel, Field
 
 from ace_next import (
     ACE,
-    Agent,
     EnvironmentResult,
     LiteLLMClient,
     Reflector,
@@ -163,6 +162,53 @@ class JudgeResponse(BaseModel):
     analysis: str = Field(description="Brief analysis of how the summarization addresses the criteria.")
     reasoning: str = Field(description="Concise reasoning on strengths, weaknesses, and any signs of hallucination.")
     score: int = Field(description="The score on a 0-100 scale.")
+
+
+class SummarizationResponse(BaseModel):
+    summarization: str = Field(description="Comprehensive summary of the call.")
+    next_actions: List[str] = Field(
+        default_factory=list,
+        description="Concrete follow-up actions the agent must take.",
+    )
+
+
+class SummarizationAgent:
+    """Domain-specific agent for conversation summarization.
+
+    Calls the LLM directly with the V8A_PROMPT (already domain-specific)
+    instead of wrapping it in the generic AGENT_PROMPT. Skillbook strategies
+    are injected as a 'LEARNED STRATEGIES' section appended to the prompt.
+
+    Satisfies :class:`AgentLike` — drop-in replacement for Agent(llm).
+    """
+
+    def __init__(self, llm: LiteLLMClient, *, max_retries: int = 3) -> None:
+        self.llm = llm
+        self.max_retries = max_retries
+
+    def generate(
+        self,
+        *,
+        question: str,
+        context: Optional[str],
+        skillbook: Any,
+        reflection: Optional[str] = None,
+        **kwargs: Any,
+    ) -> AgentOutput:
+        strategies = skillbook.as_prompt()
+        prompt = question
+        if strategies:
+            prompt += f"\n\nLEARNED STRATEGIES (apply these if relevant):\n{strategies}"
+        if reflection:
+            prompt += f"\n\nPREVIOUS FEEDBACK:\n{reflection}"
+
+        response: SummarizationResponse = self.llm.complete_structured(
+            prompt, SummarizationResponse, max_retries=self.max_retries
+        )
+        return AgentOutput(
+            reasoning=reflection or "",
+            final_answer=response.model_dump_json(),
+        )
 
 
 def summarization_grader(
@@ -478,7 +524,7 @@ def _run_ace(
     skillbook = Skillbook()
 
     ace = ACE.from_roles(
-        agent=Agent(llm),
+        agent=SummarizationAgent(llm),
         reflector=Reflector(llm),
         skill_manager=SkillManager(llm),
         environment=environment,

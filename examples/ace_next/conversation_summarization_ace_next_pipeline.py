@@ -16,7 +16,6 @@ import logging
 from typing import List, Optional
 
 from ace_next import (
-    Agent,
     LiteLLMClient,
     Reflector,
     Sample,
@@ -28,6 +27,7 @@ from ace_next.steps import AgentStep, EvaluateStep, learning_tail
 from pipeline import Pipeline
 
 from conversation_summarization_ace_next import (
+    SummarizationAgent,
     SummarizationEnvironment,
     _make_debug_sample,
     load_summarization_tasks,
@@ -52,7 +52,7 @@ def _run_pipeline(
 
     pipe = Pipeline(
         [
-            AgentStep(Agent(llm)),
+            AgentStep(SummarizationAgent(llm)),
             EvaluateStep(environment),
             *learning_tail(Reflector(llm), SkillManager(llm), skillbook),
         ]
