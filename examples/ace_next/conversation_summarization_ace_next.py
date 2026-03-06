@@ -545,6 +545,13 @@ def _run_ace(
     for skill in skillbook.skills()[:5]:
         print(f"  [{skill.section}] {skill.content}")
 
+    # Print the final prompt that would be sent to the LLM (using first sample as example)
+    strategies = skillbook.as_prompt()
+    example_prompt = samples[0].question
+    if strategies:
+        example_prompt += f"\n\nLEARNED STRATEGIES (apply these if relevant):\n{strategies}"
+    print(f"\n--- Final prompt (example, sample 0) ---\n{example_prompt}")
+
 
 def main(dbutils: object, num_samples: Optional[int] = None) -> None:
     """Run ACE Next adaptive pipeline on conversation summarization tasks.
