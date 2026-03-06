@@ -24,6 +24,7 @@ import nest_asyncio
 nest_asyncio.apply()
 
 logging.basicConfig(level=logging.INFO)
+logging.getLogger("ace_next").setLevel(logging.DEBUG)
 
 # Silence LiteLLM verbose output
 logging.getLogger("LiteLLM").setLevel(logging.WARNING)
