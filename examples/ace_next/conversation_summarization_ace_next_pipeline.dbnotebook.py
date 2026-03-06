@@ -11,7 +11,7 @@
 # MAGIC **Usage:** Run all cells top-to-bottom. `dbutils` is provided automatically by Databricks.
 
 # COMMAND ----------
-# MAGIC %pip install --upgrade ace-framework nest_asyncio
+# MAGIC %pip install --upgrade ace-framework nest_asyncio tenacity
 
 # COMMAND ----------
 # MAGIC %restart_python

@@ -111,10 +111,9 @@ def main(dbutils: object, num_samples: Optional[int] = None) -> None:
         dbutils: Databricks ``dbutils`` object (available in Databricks notebooks).
         num_samples: Number of samples to load. Defaults to all available.
     """
-    logging.basicConfig(level=logging.INFO)
 
-    llm = LiteLLMClient(model="gpt-5-mini", temperature=0.0)
-    judge_llm = LiteLLMClient(model="o4-mini-data-curation", temperature=0.0)
+    llm = LiteLLMClient(model="openai/gpt-4o-mini", temperature=0.0)
+    judge_llm = LiteLLMClient(model="openai/gpt-4.1-data-curation", temperature=0.0)
     samples = load_summarization_tasks(dbutils, num_samples=num_samples)
     _run_pipeline(samples, llm, judge_llm, total_epochs=3)
 
@@ -129,9 +128,10 @@ def debug_local() -> None:
 
         python conversation_summarization_ace_next_pipeline.py
     """
-    llm = LiteLLMClient(model="gpt-4o-mini", temperature=0.0)
-    judge_llm = LiteLLMClient(model="gpt-4o-mini", temperature=0.0)
-    _run_pipeline(_make_debug_sample(), llm, judge_llm, total_epochs=2)
+    llm = LiteLLMClient(model="openai/gpt-4o-mini", temperature=0.0)
+    judge_llm = LiteLLMClient(model="openai/gpt-4.1-data-curation", temperature=0.0)
+    samples = _make_debug_sample()
+    _run_pipeline(samples, llm, judge_llm, total_epochs=2)
 
 
 if __name__ == "__main__":
