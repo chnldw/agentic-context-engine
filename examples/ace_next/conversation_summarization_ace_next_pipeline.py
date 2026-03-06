@@ -136,4 +136,5 @@ def debug_local() -> None:
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
+    logging.getLogger("ace_next").setLevel(logging.DEBUG)
     debug_local()
