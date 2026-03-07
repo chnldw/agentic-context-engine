@@ -15,6 +15,7 @@ Usage (in a Databricks notebook)::
 
 import json
 import logging
+from datetime import datetime as _datetime
 from pathlib import Path
 from typing import Any, List, Optional
 
@@ -32,51 +33,111 @@ from ace_next import (
     TaskEnvironment,
 )
 from ace_next.core import AgentOutput
+from ace_next.implementations.helpers import format_optional
+from ace_next.implementations.prompts import SKILLBOOK_USAGE_INSTRUCTIONS
 
 logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Baseline prompt template (V8A)
+# Structured prompt template for summarization agent
 # ---------------------------------------------------------------------------
 
-# Copied from ai-copilot-prompt-benchmark summarization_prompt.py.
-# The {#if additional_instructions??}...{/if} conditional is removed —
-# additional_instructions is always injected (empty string when absent).
-V8A_PROMPT = r"""You are an expert call center analyst. Your task is to create a comprehensive summary of a customer support call.
+_CURRENT_DATE = _datetime.now().strftime("%Y-%m-%d")
 
-BEFORE WRITING THE SUMMARY, explicitly identify:
-1. The CLIENT's primary reason for calling
-2. All distinct topics/issues discussed throughout the call (not just the conclusion)
-3. Any emotions expressed by the CLIENT (frustration, confusion, satisfaction, urgency)
-4. The AGENT's key responses, solutions offered, and actions taken
-5. Any unresolved matters requiring follow-up
+SUMMARIZATION_AGENT_PROMPT = (
+    """\
+# Identity and Metadata
+You are ACE Summarization Agent v1.0, an expert call center summarization specialist.
+Prompt Version: 1.0.0
+Current Date: """
+    + _CURRENT_DATE
+    + """
+Mode: Strategic Call Summarization with Skillbook Application
 
-These identifications should be included as part of the "summarization" in an identifiable manner.
+## Core Mission
+You are an advanced summarization agent that applies accumulated strategic knowledge \
+from the skillbook to produce comprehensive, accurate summaries of customer support calls. \
+Your success depends on methodical strategy application and faithful representation of \
+the transcript.
 
-SUMMARY REQUIREMENTS:
-- Cover the ENTIRE conversation chronologically, not just the resolution
-- Give balanced attention to ALL topics discussed, regardless of when they appeared
-- Include specific details only if they are explicitly stated in the transcript (names, dates, account numbers, amounts, reference IDs)
-- Explicitly state the CLIENT's emotional state when evident (e.g., "The CLIENT expressed frustration about...")
-- Document what the AGENT did to address each concern
-- ONLY include information explicitly stated in the transcript - do not infer or fabricate details
+## Skillbook Application Protocol
 
-NEXT ACTIONS:
-- List concrete actions the AGENT must take after this call
-- Each action should be specific and actionable
-- If no follow-up is needed, return an empty list []
+### Step 1: Analyze Available Strategies
+Examine the skillbook and identify strategies relevant to call summarization:
+{skillbook}
 
-CRITICAL RULES:
-- Write in {language}
-- Never include information not present in the transcript
-- If something is unclear in the transcript, do not guess - omit it
-{additional_instructions}
+"""
+    + SKILLBOOK_USAGE_INSTRUCTIONS
+    + """
 
-OUTPUT FORMAT:
+### Step 2: Consider Recent Reflection
+Integrate learnings from recent analysis to improve summary quality:
+{reflection}
+
+### Step 3: Process the Transcript
+{question}
+
+### Step 4: Generate Summary
+
+Follow this procedure:
+
+1. **Pre-Summary Identification Checklist**
+   Before writing, explicitly identify:
+   a. The CLIENT's primary reason for calling
+   b. All distinct topics/issues discussed throughout the call (not just the conclusion)
+   c. Any emotions expressed by the CLIENT (frustration, confusion, satisfaction, urgency)
+   d. The AGENT's key responses, solutions offered, and actions taken
+   e. Any unresolved matters requiring follow-up
+
+   Include these identifications as part of the "summarization" in an identifiable manner.
+
+2. **Summary Requirements**
+   - Cover the ENTIRE conversation chronologically, not just the resolution
+   - Give balanced attention to ALL topics discussed, regardless of when they appeared
+   - Include specific details only if explicitly stated in the transcript \
+(names, dates, account numbers, amounts, reference IDs)
+   - Explicitly state the CLIENT's emotional state when evident \
+(e.g., "The CLIENT expressed frustration about...")
+   - Document what the AGENT did to address each concern
+   - ONLY include information explicitly stated in the transcript
+
+3. **Next Actions**
+   - List concrete actions the AGENT must take after this call
+   - Each action should be specific and actionable
+   - If no follow-up is needed, return an empty list []
+
+4. **Strategy Application**
+   - When applying a skillbook strategy, cite its ID in the reasoning \
+(e.g., "Following [summarization-00001], I will...")
+   - Prioritize strategies with high success rates
+   - Adapt strategies to the specific call context
+
+## CRITICAL RULES
+
+**MUST** follow:
+- Write the summary in the language of the transcript
+- Include all intermediate identifications in the summarization
+- Cite specific skill IDs when applying strategies
+- Base every detail on the transcript alone
+
+**NEVER** do:
+- Include information not present in the transcript
+- Guess or fabricate details — omit unclear information
+- Say "based on the skillbook" without specific skill citations
+- Focus only on the conclusion while ignoring earlier parts of the call
+- Add meta-commentary like "I will now..."
+
+## Output Format
 Respond ONLY with valid JSON, no markdown, no code blocks:
 {{"summarization": "", "next_actions": ["", ""]}}
+"""
+)
 
+# Keep the original V8A prompt template for formatting transcript data into the
+# {question} slot of SUMMARIZATION_AGENT_PROMPT.
+V8A_PROMPT = r"""TRANSCRIPT LANGUAGE: {language}
+{additional_instructions}
 TRANSCRIPT:
 ```
 {call_conversation}
@@ -176,15 +237,22 @@ class SummarizationResponse(BaseModel):
 class SummarizationAgent:
     """Domain-specific agent for conversation summarization.
 
-    Calls the LLM directly with the V8A_PROMPT (already domain-specific)
-    instead of wrapping it in the generic AGENT_PROMPT. Skillbook strategies
-    are injected as a 'LEARNED STRATEGIES' section appended to the prompt.
+    Uses a structured prompt template (following the pattern of
+    :class:`Agent`) with explicit skillbook application protocol,
+    reflection integration, and step-by-step execution instructions.
 
     Satisfies :class:`AgentLike` — drop-in replacement for Agent(llm).
     """
 
-    def __init__(self, llm: LiteLLMClient, *, max_retries: int = 3) -> None:
+    def __init__(
+        self,
+        llm: LiteLLMClient,
+        prompt_template: str = SUMMARIZATION_AGENT_PROMPT,
+        *,
+        max_retries: int = 3,
+    ) -> None:
         self.llm = llm
+        self.prompt_template = prompt_template
         self.max_retries = max_retries
 
     def generate(
@@ -196,12 +264,11 @@ class SummarizationAgent:
         reflection: Optional[str] = None,
         **kwargs: Any,
     ) -> AgentOutput:
-        strategies = skillbook.as_prompt()
-        prompt = question
-        if strategies:
-            prompt += f"\n\nLEARNED STRATEGIES (apply these if relevant):\n{strategies}"
-        if reflection:
-            prompt += f"\n\nPREVIOUS FEEDBACK:\n{reflection}"
+        prompt = self.prompt_template.format(
+            skillbook=skillbook.as_prompt() or "(no strategies yet)",
+            reflection=format_optional(reflection),
+            question=question,
+        )
 
         response: SummarizationResponse = self.llm.complete_structured(
             prompt, SummarizationResponse, max_retries=self.max_retries
@@ -551,10 +618,11 @@ def _run_ace(
         print(f"  [{skill.section}] {skill.content}")
 
     # Print the final prompt that would be sent to the LLM (using first sample as example)
-    strategies = skillbook.as_prompt()
-    example_prompt = samples[0].question
-    if strategies:
-        example_prompt += f"\n\nLEARNED STRATEGIES (apply these if relevant):\n{strategies}"
+    example_prompt = SUMMARIZATION_AGENT_PROMPT.format(
+        skillbook=skillbook.as_prompt() or "(no strategies yet)",
+        reflection="(none)",
+        question=samples[0].question,
+    )
     print(f"\n--- Final prompt (example, sample 0) ---\n{example_prompt}")
 
 
