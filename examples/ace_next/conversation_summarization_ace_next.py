@@ -307,7 +307,7 @@ def load_summarization_tasks(
     source_table: str = "observability",
     data_file: str = "20251210_000000-20251214_000000",
     num_samples: Optional[int] = 20,
-    sample_seed: int = 42,
+    sample_seed: int = 7913,
 ) -> List[Sample]:
     """Load summarization tasks from S3 parquet via Spark and return as ACE Samples.
 
