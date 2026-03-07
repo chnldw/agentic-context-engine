@@ -48,6 +48,22 @@ Current skillbook stats: {stats}
 """
 
 
+MAX_SKILLS = 10
+
+
+def _prune_skillbook(skillbook: Skillbook, max_skills: int = MAX_SKILLS) -> None:
+    """Hard-delete lowest-scoring skills when the skillbook exceeds *max_skills*."""
+    active = skillbook.skills()
+    if len(active) <= max_skills:
+        return
+    ranked = sorted(active, key=lambda s: (s.helpful - s.harmful, s.updated_at), reverse=True)
+    for skill in ranked[max_skills:]:
+        skillbook.remove_skill(skill.id, soft=False)
+    logger.info(
+        "Pruned skillbook from %d to %d skills", len(active), max_skills
+    )
+
+
 def _consolidate_skills(
     dedup: DeduplicationManager,
     skillbook: Skillbook,
@@ -127,6 +143,7 @@ def _run_pipeline(
             pipe.wait_for_background()
             all_results.extend(results)
             _consolidate_skills(dedup, skillbook, llm)
+            _prune_skillbook(skillbook)
 
         errors = sum(1 for r in all_results if r.error)
         epoch_scores = environment.scores[(epoch - 1) * len(samples) : epoch * len(samples)]
