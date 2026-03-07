@@ -12,8 +12,9 @@ Usage (in a Databricks notebook)::
     main(dbutils, num_samples=20)
 """
 
+import json
 import logging
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from ace_next import (
     DeduplicationManager,
@@ -36,17 +37,58 @@ from conversation_summarization_ace_next import (
 
 logger = logging.getLogger(__name__)
 
+CONSOLIDATION_PROMPT = """\
+You are a skillbook curator. Analyze the similar skill pairs below and decide \
+how to consolidate them. Return ONLY valid JSON with a single key \
+"consolidation_operations" containing a list of operations.
+
+{report}
+
+Current skillbook stats: {stats}
+"""
+
+
+def _consolidate_skills(
+    dedup: DeduplicationManager,
+    skillbook: Skillbook,
+    llm: LiteLLMClient,
+) -> None:
+    """Run dedup detection, ask LLM for consolidation ops, and apply them."""
+    report = dedup.get_similarity_report(skillbook)
+    if not report:
+        return
+
+    prompt = CONSOLIDATION_PROMPT.format(
+        report=report,
+        stats=json.dumps(skillbook.stats()),
+    )
+    response = llm.complete(prompt)
+    try:
+        data: Dict[str, Any] = LiteLLMClient._extract_json(response.text)
+    except (ValueError, json.JSONDecodeError):
+        logger.warning("Failed to parse consolidation response")
+        return
+
+    ops = dedup.apply_operations_from_response(data, skillbook)
+    if ops:
+        logger.info("Consolidated %d operations, skillbook now: %s", len(ops), skillbook.stats())
+
 
 def _run_pipeline(
     samples: List[Sample],
     llm: LiteLLMClient,
     judge_llm: LiteLLMClient,
     total_epochs: int = 3,
+    dedup_interval: int = 10,
 ) -> None:
     """Build and run the manually composed ACE pipeline on the given samples.
 
     Shared by :func:`main` and :func:`debug_local` — only the data loading
     and model selection differ between the two entry points.
+
+    Args:
+        dedup_interval: Consolidate the skillbook every *dedup_interval* samples
+            within each epoch, keeping it compact throughout training.
     """
     environment = SummarizationEnvironment(judge_llm)
     skillbook = Skillbook()
@@ -56,13 +98,7 @@ def _run_pipeline(
         [
             AgentStep(SummarizationAgent(llm)),
             EvaluateStep(environment),
-            *learning_tail(
-                Reflector(llm),
-                SkillManager(llm),
-                skillbook,
-                dedup_manager=dedup,
-                dedup_interval=10,
-            ),
+            *learning_tail(Reflector(llm), SkillManager(llm), skillbook),
         ]
     )
 
@@ -84,16 +120,20 @@ def _run_pipeline(
             for i, s in enumerate(samples)
         ]
 
-        results = pipe.run(contexts)
+        all_results = []
+        for batch_start in range(0, len(contexts), dedup_interval):
+            batch = contexts[batch_start : batch_start + dedup_interval]
+            results = pipe.run(batch)
+            pipe.wait_for_background()
+            all_results.extend(results)
+            _consolidate_skills(dedup, skillbook, llm)
 
-        errors = sum(1 for r in results if r.error)
+        errors = sum(1 for r in all_results if r.error)
         epoch_scores = environment.scores[(epoch - 1) * len(samples) : epoch * len(samples)]
         avg = sum(epoch_scores) / len(epoch_scores) if epoch_scores else 0.0
 
-        print(f"  Processed: {len(results)}, Errors: {errors}, Avg score: {avg:.3f}")
-        print(f"  Skills so far: {skillbook.stats()}")
-
-    pipe.wait_for_background()
+        print(f"  Processed: {len(all_results)}, Errors: {errors}, Avg score: {avg:.3f}")
+        print(f"  Skills: {skillbook.stats()}")
 
     print(f"\nFinal skillbook: {skillbook.stats()}")
     for skill in skillbook.skills()[:5]:
