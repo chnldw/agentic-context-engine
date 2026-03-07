@@ -580,23 +580,27 @@ def _make_debug_sample() -> List[Sample]:
 
 def _run_ace(
     samples: List[Sample],
-    llm: LiteLLMClient,
-    judge_llm: LiteLLMClient,
+    agent_llm: LiteLLMClient,
+    reasoning_llm: LiteLLMClient,
     total_epochs: int = 3,
 ) -> None:
     """Build and run the ACE adaptive pipeline on the given samples.
 
     Shared by :func:`main` and :func:`debug_local` — only the data loading
     and model selection differ between the two entry points.
+
+    Args:
+        agent_llm: LLM used for the summarization agent.
+        reasoning_llm: LLM used for reflection, skill management, and judging.
     """
-    environment = SummarizationEnvironment(judge_llm)
+    environment = SummarizationEnvironment(reasoning_llm)
     skillbook = Skillbook()
     dedup = DeduplicationManager()
 
     ace = ACE.from_roles(
-        agent=SummarizationAgent(llm),
-        reflector=Reflector(llm),
-        skill_manager=SkillManager(llm),
+        agent=SummarizationAgent(agent_llm),
+        reflector=Reflector(reasoning_llm),
+        skill_manager=SkillManager(reasoning_llm),
         environment=environment,
         skillbook=skillbook,
         dedup_manager=dedup,
@@ -634,10 +638,10 @@ def main(dbutils: object, num_samples: Optional[int] = None) -> None:
         num_samples: Number of samples to load. Defaults to all available.
     """
 
-    llm = LiteLLMClient(model="openai/gpt-4o-mini", temperature=0.0)
-    judge_llm = LiteLLMClient(model="openai/gpt-4.1-data-curation", temperature=0.0)
+    agent_llm = LiteLLMClient(model="openai/gpt-4o-mini", temperature=0.0)
+    reasoning_llm = LiteLLMClient(model="openai/gpt-4.1-data-curation", temperature=0.0)
     samples = load_summarization_tasks(dbutils, num_samples=num_samples)
-    _run_ace(samples, llm, judge_llm, total_epochs=3)
+    _run_ace(samples, agent_llm, reasoning_llm, total_epochs=3)
 
 
 def debug_local() -> None:
@@ -651,10 +655,10 @@ def debug_local() -> None:
         python conversation_summarization_ace_next.py
     """
 
-    llm = LiteLLMClient(model="openai/gpt-4o-mini", temperature=0.0)
-    judge_llm = LiteLLMClient(model="openai/gpt-4.1-data-curation", temperature=0.0)
+    agent_llm = LiteLLMClient(model="openai/gpt-4o-mini", temperature=0.0)
+    reasoning_llm = LiteLLMClient(model="openai/gpt-4.1-data-curation", temperature=0.0)
     samples = _make_debug_sample()
-    _run_ace(samples, llm, judge_llm, total_epochs=2)
+    _run_ace(samples, agent_llm, reasoning_llm, total_epochs=2)
 
 
 if __name__ == "__main__":
