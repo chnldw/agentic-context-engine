@@ -16,6 +16,7 @@ import logging
 from typing import List, Optional
 
 from ace_next import (
+    DeduplicationManager,
     LiteLLMClient,
     Reflector,
     Sample,
@@ -49,12 +50,19 @@ def _run_pipeline(
     """
     environment = SummarizationEnvironment(judge_llm)
     skillbook = Skillbook()
+    dedup = DeduplicationManager()
 
     pipe = Pipeline(
         [
             AgentStep(SummarizationAgent(llm)),
             EvaluateStep(environment),
-            *learning_tail(Reflector(llm), SkillManager(llm), skillbook),
+            *learning_tail(
+                Reflector(llm),
+                SkillManager(llm),
+                skillbook,
+                dedup_manager=dedup,
+                dedup_interval=10,
+            ),
         ]
     )
 

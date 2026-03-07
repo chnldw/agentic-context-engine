@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field
 
 from ace_next import (
     ACE,
+    DeduplicationManager,
     EnvironmentResult,
     LiteLLMClient,
     Reflector,
@@ -523,6 +524,7 @@ def _run_ace(
     """
     environment = SummarizationEnvironment(judge_llm)
     skillbook = Skillbook()
+    dedup = DeduplicationManager()
 
     ace = ACE.from_roles(
         agent=SummarizationAgent(llm),
@@ -530,6 +532,8 @@ def _run_ace(
         skill_manager=SkillManager(llm),
         environment=environment,
         skillbook=skillbook,
+        dedup_manager=dedup,
+        dedup_interval=10,
     )
 
     results = ace.run(samples, epochs=total_epochs)
