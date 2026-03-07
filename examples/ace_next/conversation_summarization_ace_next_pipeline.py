@@ -48,7 +48,7 @@ Current skillbook stats: {stats}
 """
 
 
-MAX_SKILLS = 10
+MAX_SKILLS = 20
 
 
 def _prune_skillbook(skillbook: Skillbook, max_skills: int = MAX_SKILLS) -> None:
