@@ -29,6 +29,7 @@ from ace_next.steps import AgentStep, EvaluateStep, learning_tail
 from pipeline import Pipeline
 
 from conversation_summarization_ace_next import (
+    SUMMARIZATION_AGENT_PROMPT,
     SummarizationAgent,
     SummarizationEnvironment,
     _make_debug_sample,
@@ -48,7 +49,7 @@ Current skillbook stats: {stats}
 """
 
 
-MAX_SKILLS = 20
+MAX_SKILLS = 50
 
 
 def _prune_skillbook(skillbook: Skillbook, max_skills: int = MAX_SKILLS) -> None:
@@ -92,8 +93,8 @@ def _consolidate_skills(
 
 def _run_pipeline(
     samples: List[Sample],
-    llm: LiteLLMClient,
-    judge_llm: LiteLLMClient,
+    agent_llm: LiteLLMClient,
+    reasoning_llm: LiteLLMClient,
     total_epochs: int = 3,
     dedup_interval: int = 10,
 ) -> None:
@@ -103,18 +104,21 @@ def _run_pipeline(
     and model selection differ between the two entry points.
 
     Args:
+        agent_llm: LLM used for the summarization agent.
+        reasoning_llm: LLM used for reflection, skill management, and judging.
         dedup_interval: Consolidate the skillbook every *dedup_interval* samples
             within each epoch, keeping it compact throughout training.
     """
-    environment = SummarizationEnvironment(judge_llm)
+    environment = SummarizationEnvironment(reasoning_llm)
     skillbook = Skillbook()
     dedup = DeduplicationManager()
 
+    agent = SummarizationAgent(agent_llm)
     pipe = Pipeline(
         [
-            AgentStep(SummarizationAgent(llm)),
+            AgentStep(agent),
             EvaluateStep(environment),
-            *learning_tail(Reflector(llm), SkillManager(llm), skillbook),
+            *learning_tail(Reflector(reasoning_llm), SkillManager(reasoning_llm), skillbook),
         ]
     )
 
@@ -142,7 +146,7 @@ def _run_pipeline(
             results = pipe.run(batch)
             pipe.wait_for_background()
             all_results.extend(results)
-            _consolidate_skills(dedup, skillbook, llm)
+            _consolidate_skills(dedup, skillbook, reasoning_llm)
             _prune_skillbook(skillbook)
 
         errors = sum(1 for r in all_results if r.error)
@@ -152,16 +156,30 @@ def _run_pipeline(
         print(f"  Processed: {len(all_results)}, Errors: {errors}, Avg score: {avg:.3f}")
         print(f"  Skills: {skillbook.stats()}")
 
+    _consolidate_skills(dedup, skillbook, reasoning_llm)
+    _prune_skillbook(skillbook)
     print(f"\nFinal skillbook: {skillbook.stats()}")
     for skill in skillbook.skills()[:5]:
         print(f"  [{skill.section}] {skill.content}")
 
-    # Print the final prompt that would be sent to the LLM (using first sample as example)
-    strategies = skillbook.as_prompt()
-    example_prompt = samples[0].question
-    if strategies:
-        example_prompt += f"\n\nLEARNED STRATEGIES (apply these if relevant):\n{strategies}"
-    print(f"\n--- Final prompt (example, sample 0) ---\n{example_prompt}")
+    # Print the final prompt template with learned skills (placeholders kept for input)
+    example_prompt = SUMMARIZATION_AGENT_PROMPT.format(
+        skillbook=skillbook.as_prompt() or "(no strategies yet)",
+        call_conversation="{call_conversation}",
+        language="{language}",
+        additional_instructions="{additional_instructions}",
+    )
+    print(f"\n--- Final prompt template ---\n{example_prompt}")
+
+    # Run a post-learning summarization to demonstrate the agent with learned skills
+    demo_sample = samples[0]
+    print("\n--- Post-learning summarization (sample 0) ---")
+    output = agent.generate(
+        question=demo_sample.question,
+        context=demo_sample.context,
+        skillbook=skillbook,
+    )
+    print(output.final_answer)
 
 
 def main(dbutils: object, num_samples: Optional[int] = None) -> None:
@@ -177,10 +195,10 @@ def main(dbutils: object, num_samples: Optional[int] = None) -> None:
         num_samples: Number of samples to load. Defaults to all available.
     """
 
-    llm = LiteLLMClient(model="openai/gpt-4o-mini", temperature=0.0)
-    judge_llm = LiteLLMClient(model="openai/gpt-4.1-data-curation", temperature=0.0)
+    agent_llm = LiteLLMClient(model="openai/gpt-4o-mini", temperature=0.0)
+    reasoning_llm = LiteLLMClient(model="openai/gpt-4.1-data-curation", temperature=0.0)
     samples = load_summarization_tasks(dbutils, num_samples=num_samples)
-    _run_pipeline(samples, llm, judge_llm, total_epochs=3)
+    _run_pipeline(samples, agent_llm, reasoning_llm, total_epochs=3)
 
 
 def debug_local() -> None:
@@ -193,10 +211,10 @@ def debug_local() -> None:
 
         python conversation_summarization_ace_next_pipeline.py
     """
-    llm = LiteLLMClient(model="openai/gpt-4o-mini", temperature=0.0)
-    judge_llm = LiteLLMClient(model="openai/gpt-4.1-data-curation", temperature=0.0)
+    agent_llm = LiteLLMClient(model="openai/gpt-4o-mini", temperature=0.0)
+    reasoning_llm = LiteLLMClient(model="openai/gpt-4.1-data-curation", temperature=0.0)
     samples = _make_debug_sample()
-    _run_pipeline(samples, llm, judge_llm, total_epochs=2)
+    _run_pipeline(samples, agent_llm, reasoning_llm, total_epochs=2)
 
 
 if __name__ == "__main__":

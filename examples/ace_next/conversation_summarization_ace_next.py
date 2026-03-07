@@ -33,7 +33,6 @@ from ace_next import (
     TaskEnvironment,
 )
 from ace_next.core import AgentOutput
-from ace_next.implementations.helpers import format_optional
 from ace_next.implementations.prompts import SKILLBOOK_USAGE_INSTRUCTIONS
 
 logger = logging.getLogger(__name__)
@@ -48,11 +47,7 @@ _CURRENT_DATE = _datetime.now().strftime("%Y-%m-%d")
 SUMMARIZATION_AGENT_PROMPT = (
     """\
 # Identity and Metadata
-You are ACE Summarization Agent v1.0, an expert call center summarization specialist.
-Prompt Version: 1.0.0
-Current Date: """
-    + _CURRENT_DATE
-    + """
+You are a Summarization Agent, an expert call center summarization specialist.
 Mode: Strategic Call Summarization with Skillbook Application
 
 ## Core Mission
@@ -71,14 +66,15 @@ Examine the skillbook and identify strategies relevant to call summarization:
     + SKILLBOOK_USAGE_INSTRUCTIONS
     + """
 
-### Step 2: Consider Recent Reflection
-Integrate learnings from recent analysis to improve summary quality:
-{reflection}
+### Step 2: Process the Transcript
+TRANSCRIPT LANGUAGE: {language}
+{additional_instructions}
+TRANSCRIPT:
+```
+{call_conversation}
+```
 
-### Step 3: Process the Transcript
-{question}
-
-### Step 4: Generate Summary
+### Step 3: Generate Summary
 
 Follow this procedure:
 
@@ -133,16 +129,6 @@ Respond ONLY with valid JSON, no markdown, no code blocks:
 {{"summarization": "", "next_actions": ["", ""]}}
 """
 )
-
-# Keep the original V8A prompt template for formatting transcript data into the
-# {question} slot of SUMMARIZATION_AGENT_PROMPT.
-V8A_PROMPT = r"""TRANSCRIPT LANGUAGE: {language}
-{additional_instructions}
-TRANSCRIPT:
-```
-{call_conversation}
-```
-"""
 
 
 # ---------------------------------------------------------------------------
@@ -264,10 +250,12 @@ class SummarizationAgent:
         reflection: Optional[str] = None,
         **kwargs: Any,
     ) -> AgentOutput:
+        ctx = json.loads(context) if context else {}
         prompt = self.prompt_template.format(
             skillbook=skillbook.as_prompt() or "(no strategies yet)",
-            reflection=format_optional(reflection),
-            question=question,
+            call_conversation=question,
+            language=ctx.get("language", ""),
+            additional_instructions=ctx.get("additional_instructions", ""),
         )
 
         response: SummarizationResponse = self.llm.complete_structured(
@@ -328,8 +316,7 @@ class SummarizationEnvironment(TaskEnvironment):
                 metrics={"score": 0.0},
             )
 
-        call_conversation = sample.metadata.get("call_conversation", "")
-        judge = summarization_grader(self.judge_llm, generated_summary, call_conversation)
+        judge = summarization_grader(self.judge_llm, generated_summary, sample.question)
         normalized = float(judge.score) / 100.0
         self.scores.append(normalized)
         feedback = (
@@ -347,6 +334,11 @@ class SummarizationEnvironment(TaskEnvironment):
 # ---------------------------------------------------------------------------
 # Data loading (S3 + Spark — Databricks environment)
 # ---------------------------------------------------------------------------
+
+def _make_context(language: str, additional_instructions: str) -> str:
+    """Serialize summarization-specific fields as JSON for ``Sample.context``."""
+    return json.dumps({"language": language, "additional_instructions": additional_instructions})
+
 
 S3_BUCKET_PRD = "td-databricks-prd-eu-central-1-s3-aidatacuration"
 S3_MOUNT_FOLDER = "/mnt/ai_data_curation/"
@@ -467,21 +459,12 @@ def load_summarization_tasks(
         language = row["summary_language"] or ""
         additional_instructions = row["additional_instructions"] or ""
 
-        question = V8A_PROMPT.format(
-            call_conversation=call_conversation,
-            language=language,
-            additional_instructions=additional_instructions,
-        )
-        
         samples.append(
             Sample(
-                question=question,
+                question=call_conversation,
+                context=_make_context(language, additional_instructions),
                 ground_truth=None,
-                metadata={
-                    "call_conversation": call_conversation,
-                    "language": language,
-                    "additional_instructions": additional_instructions,
-                },
+                metadata={"language": language, "additional_instructions": additional_instructions},
             )
         )
 
@@ -563,17 +546,10 @@ def _make_debug_sample() -> List[Sample]:
     additional_instructions = ""
     return [
         Sample(
-            question=V8A_PROMPT.format(
-                call_conversation=call_conversation,
-                language=language,
-                additional_instructions=additional_instructions,
-            ),
+            question=call_conversation,
+            context=_make_context(language, additional_instructions),
             ground_truth=None,
-            metadata={
-                "call_conversation": call_conversation,
-                "language": language,
-                "additional_instructions": additional_instructions,
-            },
+            metadata={"language": language, "additional_instructions": additional_instructions},
         )
     ]
 
@@ -597,8 +573,9 @@ def _run_ace(
     skillbook = Skillbook()
     dedup = DeduplicationManager()
 
+    agent = SummarizationAgent(agent_llm)
     ace = ACE.from_roles(
-        agent=SummarizationAgent(agent_llm),
+        agent=agent,
         reflector=Reflector(reasoning_llm),
         skill_manager=SkillManager(reasoning_llm),
         environment=environment,
@@ -621,13 +598,24 @@ def _run_ace(
     for skill in skillbook.skills()[:5]:
         print(f"  [{skill.section}] {skill.content}")
 
-    # Print the final prompt that would be sent to the LLM (using first sample as example)
+    # Print the final prompt template with learned skills (placeholders kept for input)
     example_prompt = SUMMARIZATION_AGENT_PROMPT.format(
         skillbook=skillbook.as_prompt() or "(no strategies yet)",
-        reflection="(none)",
-        question=samples[0].question,
+        call_conversation="{call_conversation}",
+        language="{language}",
+        additional_instructions="{additional_instructions}",
     )
-    print(f"\n--- Final prompt (example, sample 0) ---\n{example_prompt}")
+    print(f"\n--- Final prompt template ---\n{example_prompt}")
+
+    # Run a post-learning summarization to demonstrate the agent with learned skills
+    demo_sample = samples[0]
+    print("\n--- Post-learning summarization (sample 0) ---")
+    output = agent.generate(
+        question=demo_sample.question,
+        context=demo_sample.context,
+        skillbook=skillbook,
+    )
+    print(output.final_answer)
 
 
 def main(dbutils: object, num_samples: Optional[int] = None) -> None:
