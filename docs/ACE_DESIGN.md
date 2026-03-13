@@ -28,6 +28,7 @@ Implemented in `ace_next/` (parallel to `ace/` for easy rollback). The package i
 | LLM providers (`LiteLLMClient`, `InstructorClient`, `LangChainLiteLLMClient`, `ClaudeCodeLLMClient`) | Done | `ace_next/providers/` |
 | Recursive Reflector | Done | `ace_next/rr/` (SubRunner base in `ace_next/core/`) |
 | MCP Server (optional) | Done | `ace_next/integrations/mcp/` |
+| Hosted API CLI (`kayba`) | Done | `ace/cli/` (docs: `docs/integrations/hosted-api.md`) |
 
 ---
 
@@ -154,7 +155,7 @@ class ACEStepContext(StepContext):
     skillbook: SkillbookView | None = None
     trace: object | None = None
     agent_output: AgentOutput | None = None
-    reflection: ReflectorOutput | None = None
+    reflections: tuple[ReflectorOutput, ...] = ()
     skill_manager_output: UpdateBatch | None = None
     epoch: int = 1
     total_epochs: int = 1
@@ -162,6 +163,8 @@ class ACEStepContext(StepContext):
     total_steps: int | None = None
     global_sample_index: int = 0
 ```
+
+The `reflections` field is a tuple of `ReflectorOutput` instances. In single-trace mode, this is a 1-tuple. In batch mode (e.g. when `RRStep` receives a trace dict with a `"tasks"` list), the reflector produces one `ReflectorOutput` per trace and `reflections` holds the full batch. Downstream steps (`TagStep`, `UpdateStep`) iterate over the tuple uniformly — no special-casing for single vs batch. An empty tuple means no reflection has run yet.
 
 The `trace` field holds the raw execution record from any external system — a browser-use `AgentHistoryList`, a LangChain result dict, a Claude Code transcript, or any arbitrary Python object. It has no enforced schema. The Reflector receives the raw trace and is responsible for making sense of it — this gives maximum flexibility for analysis without constraining trace format. Extraction helpers can be added later as an optional layer if needed.
 
@@ -172,7 +175,7 @@ The `trace` field holds the raw execution record from any external system — a 
 | **Nature** | Step-to-step data + read-only dependencies | Mutable shared state |
 | **Lifetime** | Per-sample (born in `_build_context`, dies after pipeline) | Per-runner (created once, shared across samples) |
 | **Immutable?** | Yes — frozen fields, read-only views | No — mutable by design |
-| **Examples** | `agent_output`, `reflection`, `skillbook` (view) | `skillbook` (real), `environment`, `dedup_manager` |
+| **Examples** | `agent_output`, `reflections`, `skillbook` (view) | `skillbook` (real), `environment`, `dedup_manager` |
 | **Validated by engine?** | Yes — `requires`/`provides` | No — runtime error if missing |
 
 ---
@@ -187,7 +190,7 @@ All protocols live in `ace_next/protocols/` (one file per protocol, re-exported 
 |---|---|---|---|
 | `AgentLike` | `generate(question, context, skillbook, reflection, **kwargs) → AgentOutput` | `AgentStep` | `Agent` |
 | `ReflectorLike` | `reflect(question, agent_output, skillbook, ground_truth, feedback, **kwargs) → ReflectorOutput` | `ReflectStep` | `Reflector` |
-| `SkillManagerLike` | `update_skills(reflection, skillbook, question_context, progress, **kwargs) → SkillManagerOutput` | `UpdateStep` | `SkillManager` |
+| `SkillManagerLike` | `update_skills(reflections, skillbook, question_context, progress, **kwargs) → SkillManagerOutput` | `UpdateStep` | `SkillManager` |
 | `DeduplicationManagerLike` | `get_similarity_report(skillbook) → str \| None` | `DeduplicateStep` | `DeduplicationManager` |
 | `LLMClientLike` | `complete(prompt, **kwargs) → Any` + `complete_structured(prompt, response_model, **kwargs) → T` | `Agent`, `Reflector`, `SkillManager` | Any LLM client with both methods |
 
@@ -237,6 +240,104 @@ ace = ACELiteLLM(llm, reflector=RRStep(llm, config=RRConfig(max_iterations=10)))
 ```
 
 Both `Reflector` and `RRStep` satisfy `ReflectorLike`. The runner and pipeline don't know or care which one is in use.
+
+---
+
+## Model Configuration & API Key Management
+
+API keys and model selection are deliberately separated. Keys are infrastructure (environment variables, `.env` files). Model choices are application config (code or `ace.toml`). ACE never asks for both in the same place.
+
+### Principles
+
+1. **API keys never appear in ACE APIs** — no `api_key` parameter on any config class or constructor. Keys are resolved from the environment by LiteLLM at call time.
+2. **Per-role model selection** — Agent, Reflector, and SkillManager can each use different models. `ACEModelConfig` maps roles to `ModelConfig` instances.
+3. **Validate before running** — `ace setup` and `validate_connection()` make a tiny LLM call (3 tokens) to verify the key + model + network all work before the user writes any code.
+
+### Config types
+
+```python
+@dataclass
+class ModelConfig:
+    """Which model to use for a role. No secrets."""
+    model: str
+    temperature: float = 0.0
+    max_tokens: int = 2048
+    extra_params: dict[str, Any] | None = None
+
+@dataclass
+class ACEModelConfig:
+    """Model selection per ACE role."""
+    default: ModelConfig
+    agent: ModelConfig | None = None       # falls back to default
+    reflector: ModelConfig | None = None   # falls back to default
+    skill_manager: ModelConfig | None = None  # falls back to default
+
+    def for_role(self, role: str) -> ModelConfig: ...
+```
+
+Both live in `ace_next/providers/config.py`. `ACEModelConfig` serialises to/from `ace.toml` (committable, no secrets).
+
+### Construction paths
+
+`ACELiteLLM` now has four construction paths, from simplest to most flexible:
+
+| Constructor | Input | Use case |
+|---|---|---|
+| `ACELiteLLM.from_setup()` | `ace.toml` + `.env` (from `ace setup`) | Teams, CI, guided setup |
+| `ACELiteLLM.from_config(config)` | `ACEModelConfig` object | Per-role model selection in code |
+| `ACELiteLLM.from_model("gpt-4o")` | Model string | Quick start, single model |
+| `ACELiteLLM(llm, ...)` | Pre-built `LLMClientLike` | Full control, custom clients |
+
+`from_config()` builds a separate `LiteLLMClient` per role, so each role gets its own model and parameters. `from_model()` and `from_setup()` delegate to `from_config()` internally.
+
+### CLI
+
+The `ace` CLI (`ace_next/cli/setup.py`) provides four commands:
+
+| Command | What it does |
+|---|---|
+| `ace setup` | Interactive wizard: enter model name, provide API key, validate connection, assign per-role models. Saves `.env` + `ace.toml`. |
+| `ace models [query]` | Search LiteLLM's model registry (2,600+ models). Filter by `--provider`. Shows pricing and key status. |
+| `ace providers` | List providers with env var names and whether keys are configured. |
+| `ace validate <model>` | Test a model connection with a tiny LLM call. |
+
+### File layout
+
+| File | Secrets? | Committable? | Purpose |
+|---|---|---|---|
+| `.env` | Yes | No (gitignored) | API keys only |
+| `ace.toml` | No | Yes | Model names + parameters per role |
+
+### Registry (`ace_next/providers/registry.py`)
+
+- `validate_connection(model, api_key?)` — makes a 3-token LLM call to verify auth + model + network
+- `get_required_key(model)` — returns `(provider, env_var)` using LiteLLM's provider detection
+- `search_models(query?, provider?)` — searches LiteLLM's model cost database
+- `suggest_models(typo)` — fuzzy match for typos in model names
+- `available_providers()` — lists providers with key status
+
+### Example: `ace.toml`
+
+```toml
+[default]
+model = "gpt-4o-mini"
+
+[agent]
+model = "claude-sonnet-4-20250514"
+max_tokens = 4096
+
+[reflector]
+model = "gpt-4o-mini"
+```
+
+### Key resolution flow
+
+```
+API Key:  .env → os.environ → LiteLLM reads OPENAI_API_KEY / ANTHROPIC_API_KEY / etc.
+Model:    ace.toml → ACEModelConfig.for_role("agent") → LiteLLMClient(model=...)
+```
+
+No key ever touches ACE code. LiteLLM handles provider-specific key lookup internally.
 
 ---
 
@@ -653,14 +754,14 @@ Every runner also exposes a `build_steps()` classmethod that returns the step li
 |---|---|---|---|---|---|
 | **AgentStep** | `sample`, `skillbook` | `agent` | `agent_output` | None | default (1) |
 | **EvaluateStep** | `sample`, `agent_output` | `environment` (optional) | `trace` | None | default (1) |
-| **ReflectStep** | `trace`, `skillbook` | `reflector` | `reflection` | None (pure) | 3; `async_boundary = True` |
-| **TagStep** | `reflection` | `skillbook` (real) | — | Tags skills on skillbook | 1 |
-| **UpdateStep** | `reflection`, `skillbook` | `skill_manager` | `skill_manager_output` | None (pure) | 1 |
+| **ReflectStep** | `trace`, `skillbook` | `reflector` | `reflections` | None (pure) | 3; `async_boundary = True` |
+| **TagStep** | `reflections` | `skillbook` (real) | — | Tags skills on skillbook | 1 |
+| **UpdateStep** | `reflections`, `skillbook` | `skill_manager` | `skill_manager_output` | None (pure) | 1 |
 | **ApplyStep** | `skill_manager_output` | `skillbook` (real) | — | Applies update batch to skillbook | 1 |
 | **DeduplicateStep** | `global_sample_index` | `manager` (DeduplicationManagerLike), `skillbook` (real) | — | Consolidates similar skills | 1 |
 | **CheckpointStep** | `global_sample_index` | `skillbook` (real) | — | Saves skillbook to disk | 1 |
 | **OpikStep** | `skillbook` | `project_name`, `tags` | — | Logs pipeline traces to Opik | 1 |
-| **RROpikStep** | `reflection` | `project_name`, `tags` | — | Logs RR REPL traces to Opik (hierarchical) | 1 |
+| **RROpikStep** | `reflections` | `project_name`, `tags` | — | Logs RR REPL traces to Opik (hierarchical) | 1 |
 | **LoadTracesStep** | `sample` | — | `trace` | None (pure) | default (1) |
 | **OpenClawToTraceStep** | `trace` | — | `trace` | None (pure) | default (1) |
 | **PersistStep** | `skillbook` | `target_path` | — | Writes skillbook to CLAUDE.md or similar | 1 |
@@ -668,7 +769,7 @@ Every runner also exposes a `build_steps()` classmethod that returns the step li
 
 **Requires vs Injected:** `Requires` lists context fields read by the step — validated by the pipeline engine at construction time. The `skillbook` field on the context is a `SkillbookView` (read-only). Steps that **write** to the skillbook (TagStep, ApplyStep, DeduplicateStep, CheckpointStep) receive the real `Skillbook` via constructor injection — marked as "(real)" in the table. These injected dependencies are not tracked by `requires`/`provides`.
 
-**`trace` as the universal learning input:** The learning tail's *entry point* (ReflectStep) requires only `trace` and `skillbook` from the context — subsequent steps in the tail chain off ReflectStep's output (`reflection`). In the standard ACE pipeline, `EvaluateStep` bundles the structured fields (`sample`, `agent_output`, and optionally environment feedback) into a `trace` dict. In TraceAnalyser, `_build_context` places the raw trace directly. In integrations, the execute step provides `trace` from its framework's native output. This means the learning tail is agnostic to trace format — `ReflectStep` passes `ctx.trace` to the Reflector, which is responsible for making sense of whatever it receives.
+**`trace` as the universal learning input:** The learning tail's *entry point* (ReflectStep) requires only `trace` and `skillbook` from the context — subsequent steps in the tail chain off ReflectStep's output (`reflections`). In the standard ACE pipeline, `EvaluateStep` bundles the structured fields (`sample`, `agent_output`, and optionally environment feedback) into a `trace` dict. In TraceAnalyser, `_build_context` places the raw trace directly. In integrations, the execute step provides `trace` from its framework's native output. This means the learning tail is agnostic to trace format — `ReflectStep` passes `ctx.trace` to the Reflector, which is responsible for making sense of whatever it receives.
 
 Steps with `provides = —` are pure side-effect steps (`provides = frozenset()`). They mutate shared state (skillbook) or write to external systems (disk, Opik) but add no new fields to the context. `OpikStep` is not included in `learning_tail()` — users append it explicitly to keep observability decoupled from core learning.
 
@@ -728,7 +829,7 @@ Bridges the execute head (typed ACE objects) to the learning tail (raw traces). 
 ```python
 class ReflectStep:
     requires = frozenset({"trace", "skillbook"})
-    provides = frozenset({"reflection"})
+    provides = frozenset({"reflections"})
 
     async_boundary = True
     max_workers = 3
@@ -762,16 +863,16 @@ class ReflectStep:
                 trace=trace,
             )
 
-        return ctx.replace(reflection=reflection)
+        return ctx.replace(reflections=(reflection,))
 ```
 
-Pure — produces a reflection object, no side effects. Handles two trace formats: (1) when `ctx.trace` is a dict (from EvaluateStep or a ToTrace converter), it extracts known fields and calls the Reflector's existing API with typed arguments; (2) when `ctx.trace` is any other object (from TraceAnalyser or integrations without a converter), it passes the raw trace via `**kwargs` — the Reflector accepts it for protocol compatibility but does not forward it to the LLM. Integration-specific traces should always go through a ToTrace converter step that produces the standardised dict. Declares `async_boundary = True` — everything from here onward runs in a background thread pool. This lets the execute head return fast while learning continues.
+Pure — produces a 1-tuple of `ReflectorOutput`, no side effects. Handles two trace formats: (1) when `ctx.trace` is a dict (from EvaluateStep or a ToTrace converter), it extracts known fields and calls the Reflector's existing API with typed arguments; (2) when `ctx.trace` is any other object (from TraceAnalyser or integrations without a converter), it passes the raw trace via `**kwargs` — the Reflector accepts it for protocol compatibility but does not forward it to the LLM. Integration-specific traces should always go through a ToTrace converter step that produces the standardised dict. Declares `async_boundary = True` — everything from here onward runs in a background thread pool. This lets the execute head return fast while learning continues. `RRStep` also provides `reflections` — in batch mode it may produce a tuple with more than one element.
 
 ### TagStep
 
 ```python
 class TagStep:
-    requires = frozenset({"reflection"})
+    requires = frozenset({"reflections"})
     provides = frozenset()
 
     max_workers = 1
@@ -780,15 +881,16 @@ class TagStep:
         self.skillbook = skillbook
 
     def __call__(self, ctx: ACEStepContext) -> ACEStepContext:
-        for tag in ctx.reflection.skill_tags:
-            try:
-                self.skillbook.tag_skill(tag.id, tag.tag)
-            except ValueError:
-                logger.warning("TagStep: skill_id %r not found, skipping tag %r", tag.id, tag.tag)
+        for reflection in ctx.reflections:
+            for tag in reflection.skill_tags:
+                try:
+                    self.skillbook.tag_skill(tag.id, tag.tag)
+                except ValueError:
+                    logger.warning("TagStep: skill_id %r not found, skipping tag %r", tag.id, tag.tag)
         return ctx
 ```
 
-Side-effect step — tags skills on `self.skillbook` (the real `Skillbook`, injected via constructor — not the `SkillbookView` on the context). `max_workers = 1` serialises skillbook writes. Hallucinated skill IDs from the Reflector are logged at `WARNING` level rather than silently swallowed — this provides a diagnostic signal without aborting the pipeline.
+Side-effect step — tags skills on `self.skillbook` (the real `Skillbook`, injected via constructor — not the `SkillbookView` on the context). Iterates over all reflections in the tuple — in single-trace mode this is a 1-tuple, in batch mode it covers all per-trace reflections. `max_workers = 1` serialises skillbook writes. Hallucinated skill IDs from the Reflector are logged at `WARNING` level rather than silently swallowed — this provides a diagnostic signal without aborting the pipeline.
 
 Separated from ReflectStep so that:
 - ReflectStep is a pure function (LLM call → reflection object) and can be tested without a skillbook.
@@ -798,7 +900,7 @@ Separated from ReflectStep so that:
 
 ```python
 class UpdateStep:
-    requires = frozenset({"reflection", "skillbook"})
+    requires = frozenset({"reflections", "skillbook"})
     provides = frozenset({"skill_manager_output"})
 
     max_workers = 1
@@ -807,14 +909,16 @@ class UpdateStep:
         self.skill_manager = skill_manager
 
     def __call__(self, ctx: ACEStepContext) -> ACEStepContext:
-        output = self.skill_manager.update(
-            reflection=ctx.reflection,     # ReflectorOutput
+        output = self.skill_manager.update_skills(
+            reflections=ctx.reflections,   # tuple[ReflectorOutput, ...]
             skillbook=ctx.skillbook,       # SkillbookView (read-only)
+            question_context=...,
+            progress=...,
         )
-        return ctx.replace(skill_manager_output=output)
+        return ctx.replace(skill_manager_output=output.update)
 ```
 
-Pure — generates update operations from the `ReflectorOutput` and the current skillbook state. The Reflector has already done the heavy lifting of analysing the trace; the SkillManager turns those insights into concrete skillbook operations (ADD, UPDATE, TAG, REMOVE). Does not mutate the skillbook. `max_workers = 1` because the skill manager reads the current skillbook state and concurrent calls would see stale data.
+Pure — generates update operations from the reflections tuple and the current skillbook state. The Reflector has already done the heavy lifting of analysing the trace; the SkillManager turns those insights into concrete skillbook operations (ADD, UPDATE, TAG, REMOVE). When the tuple contains multiple reflections (batch mode), the SkillManager sees all of them in one call — enabling cross-trace pattern recognition and reducing duplicate skill entries. Does not mutate the skillbook. `max_workers = 1` because the skill manager reads the current skillbook state and concurrent calls would see stale data.
 
 ### ApplyStep
 
@@ -910,7 +1014,7 @@ class OpikStep:
 
 Explicit, opt-in observability step — creates an Opik trace per sample with pipeline metadata, agent output, reflection insights, and skill manager operations. **Does NOT register the LiteLLM callback** — call `register_opik_litellm_callback()` separately if you also want per-LLM-call token/cost tracking. Two independent tracing modes: (1) pipeline step (this class) — client-agnostic, reads `ACEStepContext` fields; (2) LiteLLM callback (`register_opik_litellm_callback`) — LiteLLM-specific, registers `OpikLogger` on `litellm.callbacks`.
 
-Only requires `skillbook` (always present). Reads other context fields (`reflection`, `skill_manager_output`, `trace`, `agent_output`) with guards — they may or may not be populated depending on pipeline shape. When used directly, gracefully degrades to a no-op when Opik is not installed or `OPIK_DISABLED=true`. When used via `ACELiteLLM(opik=True)`, **fails loudly** — raises `ImportError` if the package is missing, `RuntimeError` if client init fails.
+Only requires `skillbook` (always present). Reads other context fields (`reflections`, `skill_manager_output`, `trace`, `agent_output`) with guards — they may or may not be populated depending on pipeline shape. When used directly, gracefully degrades to a no-op when Opik is not installed or `OPIK_DISABLED=true`. When used via `ACELiteLLM(opik=True)`, **fails loudly** — raises `ImportError` if the package is missing, `RuntimeError` if client init fails.
 
 Passes `OPIK_API_KEY`, `OPIK_WORKSPACE`, and `OPIK_URL_OVERRIDE` explicitly from environment variables — does **not** depend on the global `~/.opik.config` file.
 
@@ -945,7 +1049,7 @@ register_opik_litellm_callback()
 
 ```python
 class RROpikStep:
-    requires = frozenset({"reflection"})
+    requires = frozenset({"reflections"})
     provides = frozenset()
 
     def __init__(
@@ -955,7 +1059,7 @@ class RROpikStep:
     ) -> None: ...
 ```
 
-Dedicated observability step for the Recursive Reflector. Reads `ctx.reflection.raw["rr_trace"]` — a dict populated by `RRStep` containing per-iteration REPL data and sub-agent call history — and creates a hierarchical Opik trace with child spans per iteration.
+Dedicated observability step for the Recursive Reflector. Iterates over `ctx.reflections` and reads `reflection.raw["rr_trace"]` from each — a dict populated by `RRStep` containing per-iteration REPL data and sub-agent call history — and creates a hierarchical Opik trace with child spans per iteration.
 
 Follows the same patterns as `OpikStep`: explicit opt-in only, soft-imports `opik`, respects `OPIK_DISABLED` env var, gracefully degrades to a no-op. Located in `ace_next/rr/opik.py` (co-located with the RR module, not in `ace_next/steps/`).
 
@@ -1130,14 +1234,14 @@ reflection = reflector.reflect(
 
 ### SkillManager
 
-Transforms reflections into actionable skillbook updates. Serializes the `ReflectorOutput` into a JSON dict, formats the prompt with progress and skillbook stats, and calls `llm.complete_structured(prompt, SkillManagerOutput)`.
+Transforms reflections into actionable skillbook updates. Serializes each `ReflectorOutput` in the tuple into a JSON dict, formats the prompt with progress and skillbook stats, and calls `llm.complete_structured(prompt, SkillManagerOutput)`.
 
 **No dedup integration** — in `ace_next`, deduplication is handled by a separate `DeduplicateStep` in the pipeline. The SkillManager only produces `SkillManagerOutput`; it does not call a dedup manager itself.
 
 ```python
 sm = SkillManager(llm)
 output = sm.update_skills(
-    reflection=reflection_output,
+    reflections=(reflection_output,),
     skillbook=skillbook,
     question_context="Math problem solving",
     progress="5/10 correct",

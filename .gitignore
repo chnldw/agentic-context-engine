@@ -72,6 +72,7 @@ venv.bak/
 *.png
 !benchmarks/tasks/tau_bench/*.png
 !examples/browser-use/**/*.png
+!assets/*.png
 ACE_IMPROVEMENTS.md
 ACE_ROADMAP.md
 DEMO_TODO.md
@@ -109,3 +110,6 @@ site/
 
 # Sensitive/private data (NEVER commit!)
 .private/
+
+# GSD planning artifacts (NEVER commit!)
+.planning/

@@ -28,21 +28,17 @@ injected into future agents' prompts. Identify WHAT the agent did that mattered 
 ## Variables
 | Variable | Description | Size |
 |----------|-------------|------|
-| `traces` | Dict with keys: question, ground_truth, feedback, steps (List[Dict]) | {step_count} steps |
+| `traces` | {traces_description} | {step_count} steps |
 | `skillbook` | Current strategies (string) | {skillbook_length} chars |
-
+{batch_variables}
 ### Previews
-| Field | Preview | Size |
-|-------|---------|------|
-| `traces["question"]` | "{question_preview}" | {question_length} chars |
-| first step | "{reasoning_preview}..." | {reasoning_length} chars |
-| `traces["ground_truth"]` | "{ground_truth_preview}" | {ground_truth_length} chars |
-| `traces["feedback"]` | "{feedback_preview}..." | {feedback_length} chars |
+{traces_previews}
 
 ## Functions
 | Function | Purpose |
 |----------|---------|
 | `ask_llm(question, context, mode)` | **Your primary analysis tool — sends context to a sub-LLM.** mode="analysis" for survey, mode="deep_dive" for investigation |
+| `parallel_map(fn, inputs)` | **Run multiple independent calls in parallel.** Returns ordered list of results. Use for batched ask_llm calls that don't depend on each other. Optional kwarg: `return_exceptions=True` to collect errors instead of raising. |
 | `FINAL(value)` | Submit your analysis dict |
 | `FINAL_VAR(name)` | Submit a variable by name |
 
@@ -55,6 +51,7 @@ injected into future agents' prompts. Identify WHAT the agent did that mattered 
 
 **ask_llm is your primary tool.** It can reason about meaning, intent, and correctness.
 Code is for extracting, batching, and formatting data to feed into ask_llm.
+**Use `parallel_map` to fan out independent ask_llm calls** — survey batches and independent deep-dives run simultaneously instead of one at a time.
 
 **Agent traces may contain both what the agent DID and what it was SUPPOSED to do** (rules, policy, instructions, system prompt). If present, finding and using those rules is essential — without them, you can only describe behavior, not evaluate correctness.
 
@@ -62,58 +59,97 @@ Code is for extracting, batching, and formatting data to feed into ask_llm.
 Understand the data shape and inventory. Do NOT judge outcomes yet — just catalog what you have.
 Also search for agent operating rules, policy, or instructions embedded in the trace data — understanding what the agent was *supposed* to do is essential for evaluating what it *actually* did.
 **Complete discovery in this single iteration — do NOT split schema exploration across multiple iterations.**
+
+**Batch mode:** If `traces` has a `"tasks"` key, you are analyzing ALL tasks in a single session.
+- `traces["tasks"]` — list of `{{"task_id": str, "trace": list}}` dicts
+- Each task's `"trace"` is a list of role/content message dicts
+Use `parallel_map` with `ask_llm` to analyze tasks concurrently. Look for cross-task patterns.
+Your FINAL output must include a `"tasks"` list with per-task results (see output schema).
+
 ```python
 print("Keys:", traces.keys())
+is_batch = "tasks" in traces
 steps = traces.get("steps", [])
-print(f"{{len(steps)}} steps")
-# Build trace_idx: trace_id → list index (use this in deep-dives to avoid index-vs-ID confusion)
-trace_idx = {{}}
-agent_rules = ""  # Model can populate after seeing large strings
-if steps:
-    # Schema: nested keys, 3 levels deep
-    sample = steps[0]
-    if isinstance(sample, dict):
-        schema = {{}}
-        for k, v in sample.items():
-            if isinstance(v, dict):
-                sub = {{}}
-                for k2, v2 in list(v.items())[:5]:
-                    if isinstance(v2, dict):
-                        sub[k2] = list(v2.keys())[:5]
-                    elif isinstance(v2, list) and v2:
-                        sub[k2] = f"list[{{len(v2)}}]"
-                    else:
-                        sub[k2] = type(v2).__name__
-                schema[k] = sub
-            elif isinstance(v, list) and v and isinstance(v[0], dict):
-                schema[k] = list(v[0].keys())[:5]
-            else:
-                schema[k] = f"{{type(v).__name__}}: {{repr(v)[:50]}}"
-        print("Schema:", json.dumps(schema, default=str))
-    # Per-trace inventory table + build trace_idx
-    for j, s in enumerate(steps):
-        msg_count = len(s.get("messages", s.get("steps", []))) if isinstance(s, dict) else "?"
-        trace_id = s.get("id", s.get("name", f"trace_{{j}}")) if isinstance(s, dict) else f"trace_{{j}}"
-        trace_idx[trace_id] = j
-        print(f"  [{{j}}] id={{trace_id}}  messages={{msg_count}}")
-    print(f"trace_idx built: {{len(trace_idx)}} entries")
-    # Surface large embedded strings (rules, policy, instructions often live here)
+print(f"batch_mode={{is_batch}}")
+
+if is_batch:
+    # Batch mode: all tasks in one session
+    tasks = traces["tasks"]
+    print(f"Batch of {{len(tasks)}} tasks:")
+    for t in tasks:
+        tr = t.get("trace", [])
+        print(f"  {{t.get('task_id', '?')}}: {{len(tr)}} messages")
+    # Schema from first task's trace
+    schema = {{}}
+    first_trace = tasks[0].get("trace", []) if tasks else []
+    if first_trace and isinstance(first_trace[0], dict):
+        schema = {{k: type(v).__name__ for k, v in first_trace[0].items()}}
+    print("Message schema:", json.dumps(schema, default=str))
+    # Surface large embedded strings across tasks
     large_strings = []
-    for s in steps[:3]:
-        if not isinstance(s, dict): continue
-        queue = [(k, v) for k, v in s.items()]
-        while queue:
-            k, v = queue.pop(0)
-            if isinstance(v, str) and len(v) > 500:
-                large_strings.append((k, len(v)))
-            elif isinstance(v, dict):
-                queue.extend(v.items())
+    for t in tasks[:2]:
+        for s in t.get("trace", [])[:3]:
+            if not isinstance(s, dict): continue
+            for k, v in s.items():
+                if isinstance(v, str) and len(v) > 500:
+                    large_strings.append((t.get("task_id", "?"), k, len(v)))
     if large_strings:
-        large_strings.sort(key=lambda x: -x[1])
-        for name, size in large_strings[:10]:
-            print(f"  Large string: '{{name}}' ({{size}} chars)")
-    else:
-        print("No large embedded strings found")
+        large_strings.sort(key=lambda x: -x[2])
+        for tid, name, size in large_strings[:10]:
+            print(f"  Large string: {{tid}}/{{name}} ({{size}} chars)")
+    agent_rules = ""
+    trace_idx = {{}}
+    steps = []  # Not used in batch mode — iterate traces["tasks"] instead
+else:
+    # Single-trace mode
+    # Build trace_idx: trace_id → list index (use this in deep-dives to avoid index-vs-ID confusion)
+    trace_idx = {{}}
+    agent_rules = ""  # Model can populate after seeing large strings
+    if steps:
+        # Schema: nested keys, 3 levels deep
+        sample = steps[0]
+        if isinstance(sample, dict):
+            schema = {{}}
+            for k, v in sample.items():
+                if isinstance(v, dict):
+                    sub = {{}}
+                    for k2, v2 in list(v.items())[:5]:
+                        if isinstance(v2, dict):
+                            sub[k2] = list(v2.keys())[:5]
+                        elif isinstance(v2, list) and v2:
+                            sub[k2] = f"list[{{len(v2)}}]"
+                        else:
+                            sub[k2] = type(v2).__name__
+                    schema[k] = sub
+                elif isinstance(v, list) and v and isinstance(v[0], dict):
+                    schema[k] = list(v[0].keys())[:5]
+                else:
+                    schema[k] = f"{{type(v).__name__}}: {{repr(v)[:50]}}"
+            print("Schema:", json.dumps(schema, default=str))
+        # Per-trace inventory table + build trace_idx
+        for j, s in enumerate(steps):
+            msg_count = len(s.get("messages", s.get("steps", []))) if isinstance(s, dict) else "?"
+            trace_id = s.get("id", s.get("name", f"trace_{{j}}")) if isinstance(s, dict) else f"trace_{{j}}"
+            trace_idx[trace_id] = j
+            print(f"  [{{j}}] id={{trace_id}}  messages={{msg_count}}")
+        print(f"trace_idx built: {{len(trace_idx)}} entries")
+        # Surface large embedded strings (rules, policy, instructions often live here)
+        large_strings = []
+        for s in steps[:3]:
+            if not isinstance(s, dict): continue
+            queue = [(k, v) for k, v in s.items()]
+            while queue:
+                k, v = queue.pop(0)
+                if isinstance(v, str) and len(v) > 500:
+                    large_strings.append((k, len(v)))
+                elif isinstance(v, dict):
+                    queue.extend(v.items())
+        if large_strings:
+            large_strings.sort(key=lambda x: -x[1])
+            for name, size in large_strings[:10]:
+                print(f"  Large string: '{{name}}' ({{size}} chars)")
+        else:
+            print("No large embedded strings found")
 ```
 
 ### Step 1.5: Adapt (ask_llm, iteration 2)
@@ -131,34 +167,33 @@ print(f"Eval criteria ({{len(eval_criteria)}} chars):")
 print(eval_criteria[:3000])
 ```
 
-### Step 2: Survey (ask_llm, iteration 3-4)
-Send batches of ~3 traces to ask_llm for a brief per-trace summary.
-Subagents do the heavy reading — your job is batching and serialization.
-**ask_llm can handle large context** — send full trace data, don't truncate it.
+### Step 2: Survey (parallel_map, iteration 3)
+Fan out ALL survey batches in parallel using `parallel_map`. Each batch is independent — they all get the same eval_criteria and a different slice of traces. **This replaces the sequential for-loop.**
 ```python
-summaries = {{}}
 steps = traces["steps"]
 BATCH = 3  # ~3 traces per call — subagents work best with small batches
-for i in range(0, len(steps), BATCH):
-    batch = steps[i:i+BATCH]
-    batch_data = json.dumps(batch, default=str)
-    criteria_ctx = (
-        f"EVALUATION CRITERIA:\\n{{eval_criteria}}\\n\\n---\\n\\n"
-    ) if eval_criteria else ""
-    result = ask_llm(
+batches = [steps[i:i+BATCH] for i in range(0, len(steps), BATCH)]
+criteria_ctx = (
+    f"EVALUATION CRITERIA:\\n{{eval_criteria}}\\n\\n---\\n\\n"
+) if eval_criteria else ""
+
+def survey_batch(batch):
+    return ask_llm(
         "For each trace/conversation below, give a brief summary: "
         "(1) what was requested, (2) what the agent did, "
         "(3) how it ended (success/failure/partial). "
         "Use the trace ID or index as the key.",
-        criteria_ctx + batch_data,
+        criteria_ctx + json.dumps(batch, default=str),
         mode="analysis"
     )
-    print(f"Batch {{i//BATCH+1}}: {{result[:300]}}")
-    summaries[f"batch_{{i//BATCH+1}}"] = result
+
+results = parallel_map(survey_batch, batches)
+summaries = {{f"batch_{{i+1}}": r for i, r in enumerate(results)}}
+for k, v in summaries.items():
+    print(f"{{k}}: {{v[:300]}}")
 
 # Coverage check — verify all traces were summarized
 print(f"\\nSurvey coverage: {{len(summaries)}} batches for {{len(steps)}} traces")
-# If any traces were missed (e.g. ask_llm dropped some), re-send them
 ```
 
 ### Step 3: Categorize + Plan (ask_llm, 1 iteration)
@@ -190,7 +225,7 @@ categories = ask_llm(
 print(categories[:3000])
 ```
 
-### Step 4: Deep-dive (ask_llm, iteration 5-7)
+### Step 4: Deep-dive (parallel_map, iteration 5-6)
 **Deep-dives MUST use raw trace data — NOT summaries.** Analyzing summaries of summaries is lazy and produces shallow, unverified learnings. You already have summaries from Step 2. The point of deep-dives is to go back to the raw data and find evidence that summaries miss.
 
 **Do a deep-dive for each distinct issue category** from your categorization — not just the most obvious ones. Each category of problem needs its own investigation. Store each result in a list — you need ALL of them for synthesis.
@@ -204,69 +239,42 @@ Target the most informative traces — NOT the simplest ones.
 - **Confident-but-wrong:** The agent cited data or drew a conclusion that may not match what it actually received. These cause wrong outcomes while appearing procedurally correct.
 - **Skip** short, simple, clearly routine traces — they rarely yield learnings.
 
-Each deep-dive uses two ask_llm calls in the same code block:
-1. **Verification** — extract agent claims vs received data, check correctness against rules
-2. **Analysis** — full trace + verification results, identify root causes
-
-If you discovered agent rules/policy in Step 1, include them in deep-dive context — the subagent can only evaluate correctness if it can see what the agent was supposed to do.
-
-**Both passes MUST be in the same code block** so variables are guaranteed shared. Do NOT split pass 1 and pass 2 across iterations — that causes variable-not-found errors and wastes iterations.
+Each deep-dive target needs two sequential ask_llm calls (verification then analysis), but **independent targets can run in parallel using `parallel_map`**.
 
 ```python
-deep_dives = []  # Collect ALL deep-dive results for synthesis
 rules_ctx = f"AGENT RULES:\\n{{agent_rules}}\\n\\n" if agent_rules else ""
 
-# === Deep-dive 1: single trace ===
-# Extract messages, run both passes in ONE code block
-td = steps[target_idx]
-msgs = td.get("messages", td.get("steps", []))
-claims = [m for m in msgs if isinstance(m, dict) and m.get("role") == "assistant"]
-data_in = [m for m in msgs if isinstance(m, dict) and m.get("role") in ("tool", "system")]
+def deep_dive_single(target_idx):
+    \"\"\"Run verification + analysis for a single trace.\"\"\"
+    td = steps[target_idx]
+    msgs = td.get("messages", td.get("steps", []))
+    claims = [m for m in msgs if isinstance(m, dict) and m.get("role") == "assistant"]
+    data_in = [m for m in msgs if isinstance(m, dict) and m.get("role") in ("tool", "system")]
 
-# Pass 1: Verification
-v1 = ask_llm(
-    "For each key claim or conclusion the agent made, check whether it matches "
-    "the data it received and complies with the rules. List INCORRECT claims: (1) what agent claimed, "
-    "(2) what data/rules show, (3) impact. If all correct, say so.",
-    rules_ctx + json.dumps({{"claims": claims, "data": data_in}}, default=str),
-    mode="deep_dive"
-)
-# Pass 2: Analysis (uses v1 directly — same code block)
-a1 = ask_llm(
-    "Given these verification findings and the full trace, what should the agent "
-    "do differently? Focus on root causes.",
-    f"VERIFICATION:\\n{{v1}}\\n\\n{{rules_ctx}}FULL TRACE:\\n{{json.dumps(td, default=str)}}",
-    mode="deep_dive"
-)
-deep_dives.append(f"Trace {{target_idx}} verification:\\n{{v1}}\\n\\nAnalysis:\\n{{a1}}")
-print(f"V: {{v1[:300]}}\\nA: {{a1[:1500]}}")
+    # Pass 1: Verification
+    v = ask_llm(
+        "For each key claim or conclusion the agent made, check whether it matches "
+        "the data it received and complies with the rules. List INCORRECT claims: (1) what agent claimed, "
+        "(2) what data/rules show, (3) impact. If all correct, say so.",
+        rules_ctx + json.dumps({{"claims": claims, "data": data_in}}, default=str),
+        mode="deep_dive"
+    )
+    # Pass 2: Analysis (uses v directly — same function scope)
+    a = ask_llm(
+        "Given these verification findings and the full trace, what should the agent "
+        "do differently? Focus on root causes.",
+        f"VERIFICATION:\\n{{v}}\\n\\n{{rules_ctx}}FULL TRACE:\\n{{json.dumps(td, default=str)}}",
+        mode="deep_dive"
+    )
+    return f"Trace {{target_idx}} verification:\\n{{v}}\\n\\nAnalysis:\\n{{a}}"
 
-# === Deep-dive 2: two-trace comparison (e.g. success vs failure) ===
-# Same pattern — extract both, verify both, analyze both, ALL in one block
-td_a, td_b = steps[idx_a], steps[idx_b]
-msgs_a = td_a.get("messages", td_a.get("steps", []))
-msgs_b = td_b.get("messages", td_b.get("steps", []))
-
-# Pass 1: Verify both traces
-v2 = ask_llm(
-    "For each trace, check agent claims against data received and rules. List INCORRECT claims.",
-    rules_ctx + json.dumps({{
-        "trace_a": {{"claims": [m for m in msgs_a if isinstance(m, dict) and m.get("role") == "assistant"],
-                    "data": [m for m in msgs_a if isinstance(m, dict) and m.get("role") in ("tool", "system")]}},
-        "trace_b": {{"claims": [m for m in msgs_b if isinstance(m, dict) and m.get("role") == "assistant"],
-                    "data": [m for m in msgs_b if isinstance(m, dict) and m.get("role") in ("tool", "system")]}},
-    }}, default=str),
-    mode="deep_dive"
-)
-# Pass 2: Comparative analysis
-a2 = ask_llm(
-    "Given verification findings and both full traces, what caused the different outcomes? "
-    "What should the agent do differently?",
-    f"VERIFICATION:\\n{{v2}}\\n\\n{{rules_ctx}}TRACE A:\\n{{json.dumps(td_a, default=str)}}\\n\\nTRACE B:\\n{{json.dumps(td_b, default=str)}}",
-    mode="deep_dive"
-)
-deep_dives.append(f"Traces {{idx_a}},{{idx_b}} verification:\\n{{v2}}\\n\\nAnalysis:\\n{{a2}}")
-print(f"V: {{v2[:300]}}\\nA: {{a2[:1500]}}")
+# Run all deep-dive targets in parallel — each target's two passes are sequential
+# internally, but different targets execute simultaneously
+target_indices = [...]  # fill from categorization step
+deep_dives = parallel_map(deep_dive_single, target_indices)
+for dd in deep_dives:
+    print(dd[:1500])
+    print("---")
 ```
 
 ### Step 5: Synthesize and call FINAL()
@@ -304,6 +312,7 @@ This always works regardless of data format.
 - **Failure traces:** Focus on WHERE the agent went wrong and WHY
 - **Success traces:** Was there anything non-obvious? If routine, extract zero learnings
 - **Multiple traces:** Look for cross-cutting patterns, not just individual issues
+- **Batch mode (`is_batch=True`):** Analyze ALL tasks via `parallel_map`. Use `ask_llm` per task, then look for cross-task patterns. Your FINAL must include a `"tasks"` list with per-task results.
 </strategy>
 
 <output_schema>
@@ -334,7 +343,7 @@ result = {{
 FINAL_VAR("result")
 ```
 
-### Required fields
+### Required fields (single-task mode)
 - `reasoning` — what happened and why
 - `key_insight` — single most transferable learning
 - `extracted_learnings` — list of `{{"learning": str, "atomicity_score": float, "evidence": str}}`
@@ -342,12 +351,31 @@ FINAL_VAR("result")
 
 Optional: `error_identification`, `root_cause_analysis`, `correct_approach` (include for failures).
 Every learning MUST have a non-empty `evidence` field citing specific trace details.
+
+### Batch mode output
+When `is_batch=True`, wrap per-task results in a `"tasks"` list. Each entry has the same fields as single-task mode plus `"task_id"`:
+```python
+result = {{
+    "tasks": [
+        {{
+            "task_id": "task_0",
+            "reasoning": "...",
+            "key_insight": "...",
+            "extracted_learnings": [...],
+            "skill_tags": [],
+        }},
+        # ... one per task
+    ]
+}}
+FINAL_VAR("result")
+```
 </output_schema>
 
 <output_rules>
 ## Rules
 - **ONE ```python block per response** — only the first block executes, the rest are silently ignored. After seeing output, write your next block.
 - **Batch mode:** When you have multiple independent operations (e.g., several ask_llm calls that don't depend on each other), start your first block with `# BATCH` and all blocks in that response will execute as one script. Only use `# BATCH` for independent operations within the same phase — never batch across phases (e.g., don't batch survey + deep-dive + FINAL together).
+- **Use `parallel_map` for independent ask_llm calls** — it fans out calls across threads automatically. Prefer `parallel_map` over `# BATCH` when you have a list of items to process with the same function. Use `# BATCH` only when you need separate code blocks with different logic.
 - **Use ask_llm as your primary analysis tool** — don't manually parse what ask_llm can interpret
 - **ask_llm can handle ~300K chars per call** — send full data, do not artificially truncate what you pass to it. The only truncation limit is on your print output (see below), NOT on ask_llm input.
 - Variables persist across iterations — store findings incrementally

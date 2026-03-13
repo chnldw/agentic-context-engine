@@ -1,24 +1,19 @@
-<img src="https://framerusercontent.com/images/XBGa12hY8xKYI6KzagBxpbgY4.png" alt="Kayba Logo" width="1080"/>
+<a href="https://kayba.ai"><img src="assets/kayba-banner.png" alt="Kayba - Make your agents self-improve from experience" width="1080"/></a>
 
 # Agentic Context Engine (ACE)
 
 ![GitHub stars](https://img.shields.io/github/stars/kayba-ai/agentic-context-engine?style=social)
 [![Discord](https://img.shields.io/discord/1429935408145236131?label=Discord&logo=discord&logoColor=white&color=5865F2)](https://discord.gg/mqCqH7sTyK)
 [![Twitter Follow](https://img.shields.io/twitter/follow/kaybaai?style=social)](https://twitter.com/kaybaai)
-[![PyPI version](https://badge.fury.io/py/ace-framework.svg)](https://badge.fury.io/py/ace-framework)
-[![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/downloads/) 
-![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 [![Documentation](https://img.shields.io/badge/docs-latest-blue.svg)](https://kayba-ai.github.io/agentic-context-engine/latest/)
 
-**AI agents that get smarter with every task**
-
-⭐ Star this repo if you find it useful!
-
-> **🚀 ACE v2 is coming.** We're rebuilding the framework from the ground up — a cleaner architecture, a modular pipeline engine, first-class async support, and a dramatically simpler API. Everything you love about ACE, refined and supercharged. Follow the progress in [`ace_next/`](ace_next/) and [`pipeline/`](pipeline/), or join the [Discord](https://discord.gg/mqCqH7sTyK) to stay in the loop.
+### Want this without the setup? [kayba.ai](https://kayba.ai) is our hosted dashboard: upload traces, review learned skills, deploy improved prompts.
 
 ---
 
 ## What is ACE?
+
+> **ACE v2 is coming.** We're rebuilding the framework from the ground up — a cleaner architecture, a modular pipeline engine, first-class async support, and a dramatically simpler API. Follow the progress in [`ace_next/`](ace_next/) and [`pipeline/`](pipeline/), or join the [Discord](https://discord.gg/mqCqH7sTyK) to stay in the loop.
 
 ACE enables AI agents to **learn from their execution feedback**—what works, what doesn't—and continuously improve. No fine-tuning, no training data, just automatic in-context learning.
 
